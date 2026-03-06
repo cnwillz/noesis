@@ -25,15 +25,23 @@ Level 2: 常用工具（任务需要时激活）
 
 Level 3: 高级工具（明确请求时激活）
 ├── shell.exec
-├── db.query
-└── api.call
+├── db.mysql.query
+└── ai.llm.chat
+
+Level N: 无限嵌套（按需展开）
+├── cloud.aws.s3.upload
+├── cloud.aws.ec2.start
+├── cloud.gcp.storage.read
+├── db.postgres.transaction
+├── ai.vision.ocr
+└── ...
 ```
 
 ---
 
 ## 工具分组
 
-### file 组
+### 扁平组
 
 ```python
 TOOLS_FILE = {
@@ -44,21 +52,59 @@ TOOLS_FILE = {
 }
 ```
 
-### web 组
+### 嵌套组（树状结构）
 
 ```python
-TOOLS_WEB = {
-    "web.fetch":  (fetch,  "获取指定 URL 内容"),
-    "web.search": (search, "搜索网络信息"),
+# 方式 1: 使用字典树
+TOOLS_TREE = {
+    "cloud": {
+        "aws": {
+            "s3": {
+                "upload": (s3_upload, "上传到 S3"),
+                "download": (s3_download, "从 S3 下载"),
+            },
+            "ec2": {
+                "start": (ec2_start, "启动 EC2 实例"),
+                "stop": (ec2_stop, "停止 EC2 实例"),
+            },
+        },
+        "gcp": {
+            "storage": {
+                "read": (gcp_read, "读取 GCS 文件"),
+                "write": (gcp_write, "写入 GCS 文件"),
+            },
+        },
+    },
+    "db": {
+        "mysql": {
+            "query": (mysql_query, "MySQL 查询"),
+            "transaction": (mysql_txn, "MySQL 事务"),
+        },
+        "postgres": {
+            "query": (pg_query, "Postgres 查询"),
+        },
+    },
 }
+
+# 方式 2: 扁平注册，逻辑分组
+registry.register("cloud.aws.s3.upload", s3_upload, "上传到 S3")
+registry.register("cloud.aws.s3.download", s3_download, "从 S3 下载")
+registry.register("cloud.gcp.storage.read", gcp_read, "读取 GCS 文件")
 ```
 
-### shell 组
+### 激活嵌套组
 
 ```python
-TOOLS_SHELL = {
-    "shell.exec": (exec, "执行 shell 命令"),
-}
+# 激活整个子树
+registry.activate("cloud")          # 激活所有云工具
+registry.activate("cloud.aws")      # 仅激活 AWS 工具
+registry.activate("cloud.aws.s3")   # 仅激活 S3 工具
+
+# 激活单个工具
+registry.activate("cloud.aws.s3.upload")
+
+# 混合激活
+registry.activate("file", "cloud.aws.s3", "db.mysql.query")
 ```
 
 ---
@@ -134,19 +180,41 @@ call("读取并搜索", tools=["file.read", "web"])
 
 ## 工具命名规范
 
+### 扁平命名（两级）
+
 ```
 <组名>.<操作>
 
 示例:
 - file.read
 - file.write
-- file.edit
-- file.delete
 - web.fetch
 - web.search
-- shell.exec
-- db.query
 ```
+
+### 嵌套命名（无限层级）
+
+```
+<顶级>.<子组>.<操作>
+<顶级>.<子组>.<孙组>.<操作>
+...
+
+示例:
+- file.read
+- file.write
+- cloud.aws.s3.upload
+- cloud.aws.s3.download
+- cloud.gcp.storage.read
+- db.mysql.query
+- db.mysql.transaction
+- db.postgres.query
+- ai.llm.chat
+- ai.llm.embed
+- ai.vision.analyze
+- ai.vision.ocr
+```
+
+**支持层级深度**: 无限（受限于实际工具数量）
 
 ---
 
@@ -184,37 +252,83 @@ Level 2 (需要 web 时):
 
 ## 实现示例
 
+### 核心实现（支持嵌套）
+
 ```python
 class ToolRegistry:
     def __init__(self):
-        self._groups = {}
-        self._tools = {}
+        self._tools = {}  # 扁平存储：{"cloud.aws.s3.upload": (func, desc)}
 
-    def register_group(self, name: str, tools: dict):
-        self._groups[name] = tools
+    def register(self, name: str, func: callable, desc: str):
+        """注册单个工具"""
+        self._tools[name] = (func, desc)
 
-    def activate(self, *tool_refs: str) -> list[dict]:
-        """激活工具，返回 LLM 可用的工具定义"""
+    def activate(self, *patterns: str) -> list[dict]:
+        """
+        激活工具，支持前缀匹配
+
+        activate("file")              -> 激活所有 file.* 工具
+        activate("cloud.aws")         -> 激活所有 cloud.aws.* 工具
+        activate("cloud.aws.s3")      -> 激活所有 cloud.aws.s3.* 工具
+        activate("db.mysql.query")    -> 激活单个工具
+        """
         result = []
-        for ref in tool_refs:
-            if "." in ref:
-                # 单个工具：file.read
-                group, op = ref.split(".")
-                tool = self._groups[group][f"{group}.{op}"]
-                result.append(self._make_definition(tool))
-            else:
-                # 整个组：file
-                for tool_ref, tool in self._groups[ref].items():
-                    result.append(self._make_definition(tool))
+        for pattern in patterns:
+            for name, (func, desc) in self._tools.items():
+                # 前缀匹配：pattern 是工具名的前缀
+                if name == pattern or name.startswith(f"{pattern}."):
+                    result.append(self._make_definition(func, desc, name))
         return result
 
-    def _make_definition(self, tool: tuple) -> dict:
-        func, desc = tool
+    def _make_definition(self, func, desc, name) -> dict:
         return {
-            "name": func.__name__,
+            "name": name.replace(".", "_"),  # LLM 友好名称
             "description": desc,
             "parameters": infer_schema(func)
         }
+```
+
+### 工具树可视化
+
+```python
+def print_tool_tree(registry: ToolRegistry):
+    """打印工具树结构"""
+    tree = {}
+    for name in registry._tools:
+        parts = name.split(".")
+        node = tree
+        for part in parts:
+            node = node.setdefault(part, {})
+
+    def _print(node, indent=0):
+        for key, value in sorted(node.items()):
+            if value:
+                print("  " * indent + key)
+                _print(value, indent + 1)
+            else:
+                print("  " * indent + key + " [tool]")
+
+    _print(tree)
+
+# 输出:
+# cloud
+#   aws
+#     ec2
+#       start [tool]
+#       stop [tool]
+#     s3
+#       upload [tool]
+#       download [tool]
+#   gcp
+#     storage
+#       read [tool]
+#       write [tool]
+# db
+#   mysql
+#     query [tool]
+#     transaction [tool]
+#   postgres
+#     query [tool]
 ```
 
 ---
@@ -247,13 +361,53 @@ call("搜索最新的 Python 新闻")
 # 关键词匹配，自动激活：web.fetch, web.search
 ```
 
-### 场景 3: 显式指定
+### 场景 3: 云资源管理（嵌套层级）
 
 ```python
+# 激活整个 AWS 工具树
+call("启动 my-instance EC2 实例", tools=["cloud.aws"])
+# 可用工具：cloud.aws.ec2.start, cloud.aws.ec2.stop,
+#            cloud.aws.s3.upload, cloud.aws.s3.download
+
+# 仅激活 S3 工具
+call("上传文件到 bucket", tools=["cloud.aws.s3"])
+# 可用工具：cloud.aws.s3.upload, cloud.aws.s3.download
+
+# 激活单个工具
+call("上传文件", tools=["cloud.aws.s3.upload"])
+```
+
+### 场景 4: 数据库操作（多层嵌套）
+
+```python
+# 激活所有数据库工具
+call("查询用户数据", tools=["db"])
+# 可用工具：db.mysql.query, db.mysql.transaction, db.postgres.query
+
+# 仅激活 MySQL
+call("查询用户表", tools=["db.mysql"])
+# 可用工具：db.mysql.query, db.mysql.transaction
+
+# 显式指定
 call(
-    "下载这个 URL 的内容并保存",
-    tools=["web.fetch", "file.write"]
+    "用 MySQL 查询用户数据",
+    tools=["db.mysql.query"]
 )
+```
+
+### 场景 5: AI 服务（深度嵌套）
+
+```python
+# 激活所有 AI 工具
+call("分析这张图片", tools=["ai"])
+# 可用工具：ai.llm.chat, ai.llm.embed, ai.vision.analyze, ai.vision.ocr
+
+# 仅激活视觉工具
+call("识别图片中的文字", tools=["ai.vision"])
+# 可用工具：ai.vision.analyze, ai.vision.ocr
+
+# 精确激活
+call("OCR 识别", tools=["ai.vision.ocr"])
 ```
 
 ---
@@ -271,7 +425,31 @@ ALL_TOOLS = ["file", "web", "shell"]
 SAFE_TOOLS = ["file.read", "web.fetch"]
 
 # 激进工具组（允许删除和执行）
-BOLD_TOOLS = ["file", "web", "shell.exec", "file.delete"]
+BOLD_TOOLS = ["file", "web", "shell", "file.delete"]
+
+# 云服务工具组（嵌套）
+CLOUD_TOOLS = {
+    "aws": ["cloud.aws"],      # 所有 AWS 工具
+    "aws.s3": ["cloud.aws.s3"], # 仅 S3
+    "aws.ec2": ["cloud.aws.ec2"], # 仅 EC2
+    "gcp": ["cloud.gcp"],       # 所有 GCP 工具
+    "all": ["cloud"],           # 所有云服务
+}
+
+# 数据库工具组（嵌套）
+DB_TOOLS = {
+    "mysql": ["db.mysql"],
+    "postgres": ["db.postgres"],
+    "all": ["db"],
+}
+
+# AI 工具组（嵌套）
+AI_TOOLS = {
+    "llm": ["ai.llm"],
+    "vision": ["ai.vision"],
+    "speech": ["ai.speech"],
+    "all": ["ai"],
+}
 ```
 
 ---
@@ -287,17 +465,27 @@ model = "claude-3-5-sonnet"
 
 # 工具配置
 [tools]
-# 默认激活的工具组
-default = ["file"]
+# 默认激活的工具组（支持前缀）
+default = ["file", "cloud.aws"]
 
 # 关键词触发激活
-on_keyword = { "搜索" = ["web"], "下载" = ["web"], "命令" = ["shell"] }
+on_keyword = {
+    "搜索" = ["web"],
+    "下载" = ["web.fetch"],
+    "命令" = ["shell"],
+    "数据库" = ["db"],
+    "MySQL" = ["db.mysql"],
+    "OCR" = ["ai.vision.ocr"]
+}
 
 # 最大工具数（防止 context 过长）
-max_tools = 10
+max_tools = 15
 
 # 安全模式（禁用危险工具）
 safe_mode = true  # 禁用 file.delete 和 shell.exec
+
+# 显式禁用的工具前缀
+disabled = ["shell.exec", "db.mysql.transaction"]
 ```
 
 ---
