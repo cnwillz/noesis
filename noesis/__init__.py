@@ -52,8 +52,9 @@ from .tools_builtin import (
     register_builtin_tools,
     TOOLS_BUILTIN,
     file_read,
+    file_write,
     file_append,
-    file_edit,
+    file_update,
     shell_exec,
 )
 

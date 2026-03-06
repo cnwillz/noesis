@@ -14,17 +14,7 @@ class FileTool:
     """文件操作工具"""
 
     def read(self, path: str, start_line: int = 0, end_line: Optional[int] = None) -> dict:
-        """
-        读取文件内容
-
-        Args:
-            path: 文件路径
-            start_line: 起始行号（从 0 开始）
-            end_line: 结束行号（不包含），None 表示读到末尾
-
-        Returns:
-            包含文件内容的字典
-        """
+        """读取文件内容"""
         try:
             file_path = Path(path).expanduser().resolve()
 
@@ -37,7 +27,6 @@ class FileTool:
             with open(file_path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
-            # 截取指定行范围
             selected_lines = lines[start_line:end_line]
             content = "".join(selected_lines)
 
@@ -47,8 +36,6 @@ class FileTool:
                 "path": str(file_path),
                 "total_lines": len(lines),
                 "returned_lines": len(selected_lines),
-                "start_line": start_line,
-                "end_line": end_line or len(lines)
             }
 
         except PermissionError:
@@ -58,21 +45,31 @@ class FileTool:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def append(self, path: str, content: str) -> dict:
-        """
-        追加内容到文件末尾（文件不存在则创建）
-
-        Args:
-            path: 文件路径
-            content: 要追加的内容
-
-        Returns:
-            操作结果
-        """
+    def write(self, path: str, content: str) -> dict:
+        """写入文件（覆盖模式）"""
         try:
             file_path = Path(path).expanduser().resolve()
+            file_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # 确保父目录存在
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            return {
+                "success": True,
+                "path": str(file_path),
+                "bytes_written": len(content.encode("utf-8")),
+                "operation": "write"
+            }
+
+        except PermissionError:
+            return {"success": False, "error": f"无权限写入：{path}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def append(self, path: str, content: str) -> dict:
+        """追加内容到文件末尾"""
+        try:
+            file_path = Path(path).expanduser().resolve()
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
             with open(file_path, "a", encoding="utf-8") as f:
@@ -90,18 +87,22 @@ class FileTool:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def edit(self, path: str, old_text: str, new_text: str, occurrence: int = 1) -> dict:
+    def update(self, path: str, changes: list[dict]) -> dict:
         """
-        精确编辑文件内容
+        更新文件指定行（支持多组更新）
 
         Args:
             path: 文件路径
-            old_text: 要替换的原文本
-            new_text: 新的文本内容
-            occurrence: 替换第几次出现（默认 1）
+            changes: 变更列表，每组包含:
+                - line: 行号（从 0 开始）
+                - old_text: 原整行文本（必须精确匹配，不含换行符）
+                - new_text: 新的整行文本（不含换行符）
 
-        Returns:
-            操作结果
+        Example:
+            file_update("config.py", changes=[
+                {"line": 5, "old_text": "DEBUG = True", "new_text": "DEBUG = False"},
+                {"line": 10, "old_text": "PORT = 8080", "new_text": "PORT = 3000"},
+            ])
         """
         try:
             file_path = Path(path).expanduser().resolve()
@@ -110,52 +111,72 @@ class FileTool:
                 return {"success": False, "error": f"文件不存在：{path}"}
 
             with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+                lines = f.readlines()
 
-            # 查找所有出现位置
-            matches = []
-            start = 0
-            while True:
-                pos = content.find(old_text, start)
-                if pos == -1:
-                    break
-                matches.append(pos)
-                start = pos + 1
+            applied_changes = []
+            failed_changes = []
 
-            if not matches:
-                return {
-                    "success": False,
-                    "error": "未找到指定的文本内容",
-                    "hint": "请检查 old_text 是否与文件内容精确匹配"
-                }
+            for change in changes:
+                line_num = change.get("line")
+                old_text = change.get("old_text")
+                new_text = change.get("new_text")
 
-            if len(matches) > 1 and occurrence == 1:
-                return {
-                    "success": False,
-                    "error": f"文本出现 {len(matches)} 次，请指定 occurrence 参数"
-                }
+                if line_num is None or old_text is None or new_text is None:
+                    failed_changes.append({
+                        "change": change,
+                        "error": "缺少 line, old_text 或 new_text 参数"
+                    })
+                    continue
 
-            if occurrence < 1 or occurrence > len(matches):
-                return {
-                    "success": False,
-                    "error": f"occurrence 值超出范围 (1-{len(matches)})"
-                }
+                if line_num < 0 or line_num >= len(lines):
+                    failed_changes.append({
+                        "change": change,
+                        "error": f"行号 {line_num} 超出范围 (0-{len(lines)-1})"
+                    })
+                    continue
 
-            # 执行替换
-            target_pos = matches[occurrence - 1]
-            new_content = content[:target_pos] + new_text + content[target_pos + len(old_text):]
+                # 移除换行符进行比较
+                current_line = lines[line_num].rstrip("\n")
+                old_text_cmp = old_text.rstrip("\n")
 
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(new_content)
+                if current_line != old_text_cmp:
+                    failed_changes.append({
+                        "change": change,
+                        "error": f"第 {line_num} 行内容不匹配",
+                        "expected": old_text_cmp,
+                        "actual": current_line
+                    })
+                    continue
 
-            return {
-                "success": True,
+                # 执行更新（保留换行符）
+                if lines[line_num].endswith("\n"):
+                    lines[line_num] = new_text + "\n"
+                else:
+                    lines[line_num] = new_text
+
+                applied_changes.append({
+                    "line": line_num,
+                    "old_text": old_text_cmp,
+                    "new_text": new_text
+                })
+
+            # 如果有成功的变更，写入文件
+            if applied_changes:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+
+            result = {
+                "success": len(failed_changes) == 0,
                 "path": str(file_path),
-                "old_text_length": len(old_text),
-                "new_text_length": len(new_text),
-                "occurrence_replaced": occurrence,
-                "total_matches": len(matches)
+                "changes_applied": len(applied_changes),
+                "changes_failed": len(failed_changes),
+                "applied": applied_changes
             }
+
+            if failed_changes:
+                result["failed"] = failed_changes
+
+            return result
 
         except PermissionError:
             return {"success": False, "error": f"无权限写入：{path}"}
@@ -167,19 +188,8 @@ class ShellTool:
     """Shell 命令执行工具"""
 
     def exec(self, command: str, cwd: Optional[str] = None, timeout: int = 300) -> dict:
-        """
-        执行 shell 命令
-
-        Args:
-            command: 要执行的命令
-            cwd: 工作目录（可选）
-            timeout: 超时时间（秒），默认 300 秒
-
-        Returns:
-            执行结果
-        """
+        """执行 shell 命令"""
         try:
-            # 解析命令（支持简单的管道）
             result = subprocess.run(
                 command,
                 shell=True,
@@ -213,10 +223,15 @@ _file_tool = FileTool()
 _shell_tool = ShellTool()
 
 
-# 导出为工具函数（便于注册）
+# 导出为工具函数
 def file_read(path: str, start_line: int = 0, end_line: Optional[int] = None) -> dict:
     """读取文件内容"""
     return _file_tool.read(path, start_line, end_line)
+
+
+def file_write(path: str, content: str) -> dict:
+    """写入文件（覆盖模式）"""
+    return _file_tool.write(path, content)
 
 
 def file_append(path: str, content: str) -> dict:
@@ -224,9 +239,9 @@ def file_append(path: str, content: str) -> dict:
     return _file_tool.append(path, content)
 
 
-def file_edit(path: str, old_text: str, new_text: str, occurrence: int = 1) -> dict:
-    """精确编辑文件内容"""
-    return _file_tool.edit(path, old_text, new_text, occurrence)
+def file_update(path: str, changes: list[dict]) -> dict:
+    """更新文件指定行"""
+    return _file_tool.update(path, changes)
 
 
 def shell_exec(command: str, cwd: Optional[str] = None, timeout: int = 300) -> dict:
@@ -249,6 +264,18 @@ TOOLS_BUILTIN = {
             "required": ["path"]
         }
     },
+    "file_write": {
+        "func": file_write,
+        "description": "写入文件（覆盖模式）",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "content": {"type": "string", "description": "要写入的内容"}
+            },
+            "required": ["path", "content"]
+        }
+    },
     "file_append": {
         "func": file_append,
         "description": "追加内容到文件末尾（文件不存在则创建）",
@@ -261,18 +288,28 @@ TOOLS_BUILTIN = {
             "required": ["path", "content"]
         }
     },
-    "file_edit": {
-        "func": file_edit,
-        "description": "精确编辑文件内容，需要指定原文本进行替换",
+    "file_update": {
+        "func": file_update,
+        "description": "更新文件指定行（需要 old_text 精确匹配整行）",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "文件路径"},
-                "old_text": {"type": "string", "description": "要替换的原文本"},
-                "new_text": {"type": "string", "description": "新的文本内容"},
-                "occurrence": {"type": "integer", "description": "替换第几次出现", "default": 1}
+                "changes": {
+                    "type": "array",
+                    "description": "变更列表，每组包含 line, old_text, new_text",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "line": {"type": "integer", "description": "行号（从 0 开始）"},
+                            "old_text": {"type": "string", "description": "原整行文本（必须精确匹配）"},
+                            "new_text": {"type": "string", "description": "新的整行文本"}
+                        },
+                        "required": ["line", "old_text", "new_text"]
+                    }
+                }
             },
-            "required": ["path", "old_text", "new_text"]
+            "required": ["path", "changes"]
         }
     },
     "shell_exec": {
@@ -292,16 +329,7 @@ TOOLS_BUILTIN = {
 
 
 def register_builtin_tools():
-    """
-    注册所有内置工具到全局工具注册表
-
-    Usage:
-        from noesis import register_builtin_tools
-        register_builtin_tools()
-
-        # 现在可以使用内置工具
-        result = call("读取文件", tools=["file_read"])
-    """
+    """注册所有内置工具"""
     from .tools import register_tool
 
     for name, tool in TOOLS_BUILTIN.items():
