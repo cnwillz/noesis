@@ -96,7 +96,7 @@ result = call(
 请修改 {TEST_FILE} 文件：
 - 将调试模式从 true 改为 false
 - 将端口号从 8080 改为 3000
-使用 file_update 工具，需要先读取文件确认行号和原文本。
+使用 file_update 工具，直接指定原文本和新文本，不需要行号。
 """,
     profile="default",
     tools=["file_read", "file_update"]
@@ -117,15 +117,15 @@ result = call(
 print(f"LLM 输出：{result.output}")
 
 
-# ========== 7. 演示更新失败（old_text 不匹配） ==========
-print("\n7. 演示更新失败（old_text 不匹配）")
+# ========== 7. 演示更新失败（内容不唯一） ==========
+print("\n7. 演示更新失败（内容不唯一）")
 print("-" * 40)
 
 result = call(
     f"""
 请尝试修改 {TEST_FILE} 文件：
-- 将第 3 行的 "debug = false" 改为 "debug = true"
-使用 file_update 工具。（注意：这是故意演示失败场景）
+- 将 "DemoApp" 改为 "MyApp"
+使用 file_update 工具。（注意：如果文件中出现多次 "DemoApp"，会失败）
 """,
     profile="default",
     tools=["file_update"]

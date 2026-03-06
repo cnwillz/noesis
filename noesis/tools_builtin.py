@@ -250,20 +250,28 @@ class FileTool:
 
     def update(self, path: str, changes: list[dict]) -> dict:
         """
-        更新文件指定行（支持多组更新）
+        更新文件内容（基于内容的唯一匹配替换）
+
+        不需要指定行号，通过 old_text 在文件中查找并替换为 new_text。
+        如果 old_text 出现多次或不存在，将返回错误。
 
         Args:
             path: 文件路径
             changes: 变更列表，每组包含:
-                - line: 行号（从 0 开始）
-                - old_text: 原整行文本（必须精确匹配，不含换行符）
-                - new_text: 新的整行文本（不含换行符）
+                - old_text: 原文本（可以是多行，必须精确匹配且唯一）
+                - new_text: 新的文本
 
         Example:
             file_update("config.py", changes=[
-                {"line": 5, "old_text": "DEBUG = True", "new_text": "DEBUG = False"},
-                {"line": 10, "old_text": "PORT = 8080", "new_text": "PORT = 3000"},
+                {"old_text": "DEBUG = True", "new_text": "DEBUG = False"},
+                {"old_text": "PORT = 8080", "new_text": "PORT = 3000"},
             ])
+
+            # 多行替换
+            file_update("app.py", changes=[{
+                "old_text": "def hello():\n    print('Hi')",
+                "new_text": "def hello():\n    print('Hello')"
+            }])
         """
         try:
             file_path = Path(path).expanduser()
@@ -279,59 +287,52 @@ class FileTool:
                 return {"success": False, "error": f"文件不存在：{path}"}
 
             with open(resolved_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+                content = f.read()
 
             applied_changes = []
             failed_changes = []
 
             for change in changes:
-                line_num = change.get("line")
                 old_text = change.get("old_text")
                 new_text = change.get("new_text")
 
-                if line_num is None or old_text is None or new_text is None:
+                if old_text is None or new_text is None:
                     failed_changes.append({
                         "change": change,
-                        "error": "缺少 line, old_text 或 new_text 参数"
+                        "error": "缺少 old_text 或 new_text 参数"
                     })
                     continue
 
-                if line_num < 0 or line_num >= len(lines):
+                # 查找 old_text 在文件中的出现次数
+                count = content.count(old_text)
+
+                if count == 0:
                     failed_changes.append({
                         "change": change,
-                        "error": f"行号 {line_num} 超出范围 (0-{len(lines)-1})"
+                        "error": f"未找到匹配的内容：{old_text[:50]}..." if len(old_text) > 50 else f"未找到匹配的内容：{old_text}"
                     })
                     continue
 
-                # 移除换行符进行比较
-                current_line = lines[line_num].rstrip("\n")
-                old_text_cmp = old_text.rstrip("\n")
-
-                if current_line != old_text_cmp:
+                if count > 1:
                     failed_changes.append({
                         "change": change,
-                        "error": f"第 {line_num} 行内容不匹配",
-                        "expected": old_text_cmp,
-                        "actual": current_line
+                        "error": f"内容出现 {count} 次，必须唯一匹配：{old_text[:50]}..." if len(old_text) > 50 else f"内容出现 {count} 次，必须唯一匹配：{old_text}"
                     })
                     continue
 
-                # 执行更新（保留换行符）
-                if lines[line_num].endswith("\n"):
-                    lines[line_num] = new_text + "\n"
-                else:
-                    lines[line_num] = new_text
+                # 唯一匹配，执行替换
+                content = content.replace(old_text, new_text, 1)
 
                 applied_changes.append({
-                    "line": line_num,
-                    "old_text": old_text_cmp,
-                    "new_text": new_text
+                    "old_text": old_text,
+                    "new_text": new_text,
+                    "matched": True
                 })
 
             # 如果有成功的变更，写入文件
             if applied_changes:
                 with open(resolved_path, "w", encoding="utf-8") as f:
-                    f.writelines(lines)
+                    f.write(content)
 
             result = {
                 "success": len(failed_changes) == 0,
@@ -471,22 +472,21 @@ TOOLS_BUILTIN = {
     },
     "file_update": {
         "func": file_update,
-        "description": "更新文件指定行（需要 old_text 精确匹配整行，沙盒限制：仅限 workspace 目录）",
+        "description": "更新文件内容（基于内容的唯一匹配替换，沙盒限制：仅限 workspace 目录）",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "文件路径（必须在 workspace 目录内）"},
                 "changes": {
                     "type": "array",
-                    "description": "变更列表，每组包含 line, old_text, new_text",
+                    "description": "变更列表，每组包含 old_text, new_text",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "line": {"type": "integer", "description": "行号（从 0 开始）"},
-                            "old_text": {"type": "string", "description": "原整行文本（必须精确匹配）"},
-                            "new_text": {"type": "string", "description": "新的整行文本"}
+                            "old_text": {"type": "string", "description": "原文本（可以是多行，必须精确匹配且在文件中唯一）"},
+                            "new_text": {"type": "string", "description": "新的文本"}
                         },
-                        "required": ["line", "old_text", "new_text"]
+                        "required": ["old_text", "new_text"]
                     }
                 }
             },

@@ -82,7 +82,7 @@ result = call(
 请修改 {TEST_FILE} 文件：
 - 将调试模式从 true 改为 false
 - 将端口号从 8080 改为 3000
-使用 file_update 工具，需要指定行号和原文本。
+使用 file_update 工具，直接指定要替换的原文本和新文本，不需要行号。
 """,
     profile="default",
     tools=["file_read", "file_update"]

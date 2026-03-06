@@ -105,7 +105,7 @@ class TestFileAppend:
 
 
 class TestFileUpdate:
-    """测试 file_update"""
+    """测试 file_update（基于内容的唯一匹配替换）"""
 
     def setup_method(self):
         # 使用 workspace 目录内的临时文件
@@ -117,19 +117,21 @@ class TestFileUpdate:
         shutil.rmtree(self.workspace_dir, ignore_errors=True)
 
     def test_update_single_line(self):
+        """测试单行替换"""
         self.test_file.write_text("DEBUG = True\nPORT = 8080\n", encoding="utf-8")
         result = file_update(str(self.test_file), changes=[
-            {"line": 0, "old_text": "DEBUG = True", "new_text": "DEBUG = False"}
+            {"old_text": "DEBUG = True", "new_text": "DEBUG = False"}
         ])
         assert result["success"] is True
         assert result["changes_applied"] == 1
         assert self.test_file.read_text(encoding="utf-8") == "DEBUG = False\nPORT = 8080\n"
 
-    def test_update_multiple_lines(self):
+    def test_update_multiple_changes(self):
+        """测试多组替换"""
         self.test_file.write_text("DEBUG = True\nPORT = 8080\nHOST = localhost\n", encoding="utf-8")
         result = file_update(str(self.test_file), changes=[
-            {"line": 0, "old_text": "DEBUG = True", "new_text": "DEBUG = False"},
-            {"line": 1, "old_text": "PORT = 8080", "new_text": "PORT = 3000"}
+            {"old_text": "DEBUG = True", "new_text": "DEBUG = False"},
+            {"old_text": "PORT = 8080", "new_text": "PORT = 3000"}
         ])
         assert result["success"] is True
         assert result["changes_applied"] == 2
@@ -137,21 +139,43 @@ class TestFileUpdate:
         assert "DEBUG = False" in content
         assert "PORT = 3000" in content
 
-    def test_update_mismatch(self):
+    def test_update_multiline(self):
+        """测试多行文本替换"""
+        self.test_file.write_text("def hello():\n    print('Hi')\n\ndef goodbye():\n    pass\n", encoding="utf-8")
+        result = file_update(str(self.test_file), changes=[
+            {"old_text": "def hello():\n    print('Hi')", "new_text": "def hello():\n    print('Hello')"}
+        ])
+        assert result["success"] is True
+        content = self.test_file.read_text(encoding="utf-8")
+        assert "print('Hello')" in content
+        assert "print('Hi')" not in content
+
+    def test_update_not_found(self):
+        """测试未找到匹配内容"""
         self.test_file.write_text("DEBUG = True\n", encoding="utf-8")
         result = file_update(str(self.test_file), changes=[
-            {"line": 0, "old_text": "DEBUG = False", "new_text": "DEBUG = True"}
+            {"old_text": "DEBUG = False", "new_text": "DEBUG = True"}
         ])
         assert result["success"] is False
-        assert "不匹配" in result["failed"][0]["error"]
+        assert "未找到" in result["failed"][0]["error"]
 
-    def test_update_out_of_range(self):
-        self.test_file.write_text("line 1\nline 2\n", encoding="utf-8")
+    def test_update_not_unique(self):
+        """测试内容不唯一"""
+        self.test_file.write_text("DEBUG = True\nDEBUG = True\n", encoding="utf-8")
         result = file_update(str(self.test_file), changes=[
-            {"line": 10, "old_text": "test", "new_text": "test"}
+            {"old_text": "DEBUG = True", "new_text": "DEBUG = False"}
         ])
         assert result["success"] is False
-        assert "超出范围" in result["failed"][0]["error"]
+        assert "唯一" in result["failed"][0]["error"] or "出现" in result["failed"][0]["error"]
+
+    def test_update_missing_params(self):
+        """测试缺少必要参数"""
+        self.test_file.write_text("content\n", encoding="utf-8")
+        result = file_update(str(self.test_file), changes=[
+            {"new_text": "something"}  # 缺少 old_text
+        ])
+        assert result["success"] is False
+        assert "缺少" in result["failed"][0]["error"]
 
 
 class TestShellExec:
