@@ -49,9 +49,6 @@ print("\n" + "=" * 50 + "\n")
 
 # ============ 步骤 4: 使用工具调用 LLM ============
 
-# 注意：需要配置有效的 API Key 才能实际调用
-# 可以使用环境变量或配置文件设置
-
 examples = [
     ("北京天气怎么样？", ["get_weather"]),
     ("计算 123 + 456 * 2", ["calculator"]),
@@ -64,16 +61,16 @@ for prompt, tools in examples:
     print(f"Tools: {tools}")
     print("-" * 40)
 
-    # 实际调用示例（需要有效的 API 配置）
-    # result = call(prompt, profile="default", tools=tools)
-    #
-    # # 查看思维链（包含工具调用过程）
-    # for step in result.thought_chain:
-    #     print(f"[{step.kind}] {step.content}")
-    #
-    # print(f"\n最终输出：{result.output}\n")
+    # 调用 LLM
+    result = call(prompt, profile="default", tools=tools)
 
-    print("（需要配置 API Key 后才能实际调用）\n")
+    # 查看思维链（包含工具调用过程）
+    print("\n思维链:")
+    for step in result.thought_chain:
+        print(f"[{step.kind}] {step.content[:100]}...")
+
+    print(f"\n最终输出：{result.output}\n")
+    print("-" * 40)
 
 print("=" * 50)
 print("完成！")
