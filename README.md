@@ -28,52 +28,106 @@ for step in result.thought_chain:
     print(f"[{step.kind}] {step.content}")
 ```
 
-## 多 Provider 支持
+## Profiles 机制（推荐）
+
+**优势**：预先配置多个模型，代码中只使用名称，不暴露任何敏感信息。
+
+### 方式 1: 环境变量配置 Profiles
+
+```bash
+# .env 文件或 shell 配置
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+
+# 配置多个模型 profiles
+export NOESIS_PROFILES='
+{
+    "fast": {
+        "provider": "anthropic",
+        "model": "claude-3-haiku-20240307"
+    },
+    "smart": {
+        "provider": "anthropic",
+        "model": "claude-3-opus-20240229"
+    },
+    "cheap": {
+        "provider": "openai",
+        "model": "gpt-3.5-turbo"
+    }
+}'
+```
 
 ```python
-from noesis import call, LLMConfig
+from noesis import call
 
-# 方式 1: 直接在 call() 中指定不同 provider
-result_anthropic = call(
-    prompt="你好",
-    provider="anthropic",
-    model="claude-3-5-sonnet-20241022",
-    api_key="sk-ant-...",
+# 代码中只使用名称，不接触任何敏感信息
+result_fast = call("你好", profile="fast")      # 快速响应
+result_smart = call("复杂问题", profile="smart")  # 高智能
+result_cheap = call("简单任务", profile="cheap")  # 便宜
+```
+
+### 方式 2: 代码中注册 Profiles
+
+```python
+from noesis import register_profile, ModelProfile, call
+
+# 注册模型配置（API Key 通过环境变量加载）
+register_profile(
+    "fast",
+    ModelProfile(
+        name="fast",
+        provider="anthropic",
+        model="claude-3-haiku-20240307",
+    ),
 )
 
-result_openai = call(
-    prompt="Hello",
-    provider="openai",
-    model="gpt-4o",
-    api_key="sk-...",
+register_profile(
+    "smart",
+    ModelProfile(
+        name="smart",
+        provider="anthropic",
+        model="claude-3-opus-20240229",
+    ),
 )
 
-# 方式 2: 使用 LLMConfig 对象
-anthropic_config = LLMConfig(
-    provider="anthropic",
-    model="claude-3-5-sonnet-20241022",
-    api_key="sk-ant-...",
-)
+# 查看可用 profiles
+from noesis import list_profiles
+print(list_profiles())  # ["fast", "smart"]
 
-openai_config = LLMConfig(
-    provider="openai",
-    model="gpt-4o",
-    api_key="sk-...",
-)
+# 使用
+result = call("你好", profile="fast")
+```
 
-result1 = call("你好", config=anthropic_config)
-result2 = call("Hello", config=openai_config)
+### 方式 3: 配置文件
 
-# 方式 3: 并发调用不同 provider
-import asyncio
+```toml
+# .noesis.toml
+[profiles.fast]
+provider = "anthropic"
+model = "claude-3-haiku-20240307"
 
-async def main():
-    tasks = [
-        call("你好", provider="anthropic", api_key="sk-ant-..."),
-        call("Hello", provider="openai", api_key="sk-..."),
-        call("こんにちは", provider="openai", base_url="https://custom-api.com"),
-    ]
-    results = await asyncio.gather(*tasks)
+[profiles.smart]
+provider = "anthropic"
+model = "claude-3-opus-20240229"
+
+[profiles.cheap]
+provider = "openai"
+model = "gpt-3.5-turbo"
+```
+
+```python
+import tomli
+from noesis import register_profile, ModelProfile
+
+with open(".noesis.toml", "rb") as f:
+    config = tomli.load(f)
+
+# 从配置注册 profiles
+for name, profile_config in config["profiles"].items():
+    register_profile(name, ModelProfile(name=name, **profile_config))
+
+# 使用
+result = call("你好", profile="fast")
 ```
 
 ## 输出示例

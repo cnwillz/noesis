@@ -9,7 +9,7 @@ LLM 调用 - 核心接口
 
 配置优先级（针对每次调用）：
 1. call() 函数参数（最高优先级）
-2. configure() 全局配置
+2. configure() 全局配置 / profiles
 3. 环境变量
 4. 默认值
 """
@@ -93,6 +93,47 @@ class LLMConfig:
         return defaults.get(self.provider, "gpt-3.5-turbo")
 
 
+# ============ Profiles 机制：预配置多个模型，代码中只使用名称 ============
+
+@dataclass
+class ModelProfile:
+    """
+    模型配置 Profile
+
+    用于预先在环境变量或配置文件中定义多个模型配置，
+    代码中只使用配置名称，避免暴露敏感信息。
+
+    用法:
+        # 环境变量定义 profiles
+        export NOESIS_PROFILES='{"fast":{"model":"claude-3-haiku"}, "smart":{"model":"claude-3-opus"}}'
+
+        # 代码中使用
+        result = call("你好", profile="fast")
+    """
+    name: str
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    max_tokens: int = 4096
+    system: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+
+    def to_config(self) -> LLMConfig:
+        """转换为 LLMConfig"""
+        return LLMConfig(
+            provider=self.provider,
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            max_tokens=self.max_tokens,
+            system=self.system,
+            anthropic_api_key=self.anthropic_api_key,
+            openai_api_key=self.openai_api_key,
+        )
+
+
 def _load_env_config() -> dict:
     """从环境变量加载配置"""
     return {
@@ -109,7 +150,37 @@ def _load_env_config() -> dict:
         # Provider 特定的 API Key
         "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY"),
         "openai_api_key": os.environ.get("OPENAI_API_KEY"),
+
+        # Profiles 配置
+        "profiles": _parse_profiles_env(os.environ.get("NOESIS_PROFILES")),
     }
+
+
+def _parse_profiles_env(profiles_str: Optional[str]) -> dict[str, ModelProfile]:
+    """解析环境变量中的 profiles 配置"""
+    if not profiles_str:
+        return {}
+
+    try:
+        import json as stdlib_json
+        profiles_data = stdlib_json.loads(profiles_str)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+    profiles = {}
+    for name, config in profiles_data.items():
+        profiles[name] = ModelProfile(
+            name=name,
+            provider=config.get("provider"),
+            model=config.get("model"),
+            api_key=config.get("api_key"),
+            base_url=config.get("base_url"),
+            max_tokens=config.get("max_tokens", 4096),
+            system=config.get("system"),
+            anthropic_api_key=config.get("anthropic_api_key"),
+            openai_api_key=config.get("openai_api_key"),
+        )
+    return profiles
 
 
 # 全局配置（环境变量 + 默认值）
@@ -125,6 +196,9 @@ _config = {
     # Provider 特定的 API Key
     "anthropic_api_key": _env_config["anthropic_api_key"],
     "openai_api_key": _env_config["openai_api_key"],
+
+    # Profiles
+    "profiles": _env_config["profiles"],
 }
 
 
@@ -137,6 +211,9 @@ def configure(
     trace_enabled: Optional[bool] = None,
     anthropic_api_key: Optional[str] = None,
     openai_api_key: Optional[str] = None,
+    # Profile 注册
+    profile: Optional[str] = None,
+    profile_config: Optional[ModelProfile] = None,
 ):
     """配置全局参数"""
     global _config
@@ -157,6 +234,50 @@ def configure(
     if openai_api_key is not None:
         _config["openai_api_key"] = openai_api_key
 
+    # 注册 Profile
+    if profile and profile_config:
+        _config["profiles"][profile] = profile_config
+
+
+def register_profile(name: str, profile: ModelProfile):
+    """
+    注册一个模型配置 Profile
+
+    用法:
+        register_profile(
+            "fast",
+            ModelProfile(
+                name="fast",
+                provider="anthropic",
+                model="claude-3-haiku-20240307",
+            ),
+        )
+
+        register_profile(
+            "smart",
+            ModelProfile(
+                name="smart",
+                provider="anthropic",
+                model="claude-3-opus-20240229",
+            ),
+        )
+
+        # 使用时
+        result = call("你好", profile="fast")
+    """
+    global _config
+    _config["profiles"][name] = profile
+
+
+def get_profile(name: str) -> Optional[ModelProfile]:
+    """获取注册的 Profile 配置"""
+    return _config["profiles"].get(name)
+
+
+def list_profiles() -> list[str]:
+    """列出所有可用的 Profile 名称"""
+    return list(_config["profiles"].keys())
+
 
 def call(
     prompt: str,
@@ -169,6 +290,7 @@ def call(
     trace: bool = False,
     system: Optional[str] = None,
     max_tokens: int = 4096,
+    profile: Optional[str] = None,  # 新增：使用预配置的 Profile
 ) -> CallResult:
     """
     执行 LLM 调用（带完整思维链记录）
@@ -184,6 +306,7 @@ def call(
         trace: 是否启用思维链追踪
         system: System prompt（仅 Anthropic）
         max_tokens: 最大输出 token 数
+        profile: Profile 名称（可选，使用预配置的配置）
 
     Returns:
         CallResult: 调用结果，包含输出和思维链
@@ -192,7 +315,11 @@ def call(
         # 方式 1: 使用全局配置（环境变量或 configure()）
         result = call("你好")
 
-        # 方式 2: 单次调用配置不同的 provider
+        # 方式 2: 使用 Profile（推荐，不暴露敏感信息）
+        result = call("你好", profile="fast")  # 快速响应
+        result = call("复杂任务", profile="smart")  # 高智能
+
+        # 方式 3: 单次调用配置不同的 provider
         result = call(
             "你好",
             provider="openai",
@@ -200,7 +327,7 @@ def call(
             api_key=os.environ["OPENAI_API_KEY"],
         )
 
-        # 方式 3: 使用 LLMConfig 对象
+        # 方式 4: 使用 LLMConfig 对象
         config = LLMConfig(
             provider="anthropic",
             model="claude-3-5-sonnet-20241022",
@@ -208,6 +335,12 @@ def call(
         )
         result = call("你好", config=config)
     """
+    # 如果使用 Profile，转换为 LLMConfig
+    if profile:
+        profile_config = get_profile(profile)
+        if profile_config:
+            config = profile_config.to_config()
+
     # 构建调用配置（优先级：函数参数 > config 参数 > 全局配置）
     call_config = LLMConfig(
         provider=provider or (config.provider if config else None) or _config["provider"],
