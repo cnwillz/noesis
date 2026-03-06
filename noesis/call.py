@@ -1,10 +1,14 @@
 """
 LLM 调用 - 核心接口
+
+支持：
+- Anthropic API (Claude)
+- OpenAI API
+- 兼容 OpenAI 格式的 API
 """
 
 import json
 import os
-import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +19,7 @@ from .types import ThoughtStep, CallResult
 
 # 全局配置
 _config = {
-    "provider": "claude",
+    "provider": "anthropic",
     "model": None,  # 自动根据 provider 选择
     "api_key": None,
     "base_url": None,
@@ -37,7 +41,8 @@ def configure(
 
     Usage:
         configure(
-            model="claude-sonnet-4-6",
+            provider="anthropic",
+            model="claude-sonnet-4-5-20251001",
             log_dir="./logs",
             trace_enabled=True,
         )
@@ -63,7 +68,7 @@ def _get_model() -> str:
         return _config["model"]
 
     defaults = {
-        "claude": "claude-sonnet-4-6",
+        "anthropic": "claude-sonnet-4-5-20251001",
         "openai": "gpt-4o",
         "ollama": "llama3.1:8b",
     }
@@ -76,6 +81,8 @@ def call(
     provider: Optional[str] = None,
     log_to: Optional[str] = None,
     trace: bool = False,
+    system: Optional[str] = None,  # System prompt（仅 Anthropic）
+    max_tokens: int = 4096,
 ) -> CallResult:
     """
     执行 LLM 调用（带完整思维链记录）
@@ -86,6 +93,8 @@ def call(
         provider: LLM 提供商（可选，覆盖全局配置）
         log_to: 日志文件路径（JSONL 格式）
         trace: 是否启用思维链追踪
+        system: System prompt（仅 Anthropic）
+        max_tokens: 最大输出 token 数
 
     Returns:
         CallResult: 调用结果，包含输出和思维链
@@ -166,94 +175,67 @@ def _call_llm(
     model: str,
     prompt: str,
     on_step: callable,
+    system: Optional[str] = None,
+    max_tokens: int = 4096,
 ) -> str:
     """调用 LLM"""
-    if provider == "claude":
-        return _call_claude(model, prompt, on_step)
+    if provider == "anthropic":
+        return _call_anthropic(model, prompt, on_step, system, max_tokens)
     elif provider == "openai":
-        return _call_openai(model, prompt, on_step)
+        return _call_openai(model, prompt, on_step, max_tokens)
     elif provider == "ollama":
         return _call_ollama(model, prompt, on_step)
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
 
-def _call_claude(model: str, prompt: str, on_step: callable) -> str:
-    """调用 Claude Code CLI"""
-    import copy
-    import os
+def _call_anthropic(
+    model: str,
+    prompt: str,
+    on_step: callable,
+    system: Optional[str] = None,
+    max_tokens: int = 4096,
+) -> str:
+    """调用 Anthropic API"""
+    import requests
 
-    # 注意：不传 --model 参数，使用全局配置的模型
-    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    api_key = _config["api_key"] or os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
 
-    # 清除 CLAUDECODE 环境变量，避免嵌套会话问题
-    env = copy.copy(os.environ)
-    env.pop("CLAUDECODE", None)
-    env.pop("CLAUDE_CODE_INNER_SESSION", None)
+    url = _config["base_url"] or "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if system:
+        payload["system"] = system
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            env=env,
-        )
+    response = requests.post(url, json=payload, headers=headers, timeout=300)
+    response.raise_for_status()
+    data = response.json()
 
-        # Claude Code 输出是 JSON Lines 格式，需要解析每一行
-        lines = proc.stdout.strip().split("\n")
-        result_line = None
-        thought_parts = []
+    # 提取内容
+    content = data.get("content", [])
+    output = ""
+    for c in content:
+        if c.get("type") == "text":
+            output += c.get("text", "")
 
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-                if isinstance(event, list):
-                    # 有些事件是数组格式
-                    for item in event:
-                        _process_event(item, thought_parts)
-                        if isinstance(item, dict) and item.get("type") == "result":
-                            result_line = item
-                elif isinstance(event, dict):
-                    _process_event(event, thought_parts)
-                    if event.get("type") == "result":
-                        result_line = event
-            except json.JSONDecodeError:
-                continue
+    # 记录思考过程（如果有）
+    if output:
+        on_step("thought", output)
 
-        # 记录思考过程
-        if thought_parts:
-            on_step("thought", "\n".join(thought_parts))
-
-        # 提取结果
-        if result_line and isinstance(result_line, dict):
-            return result_line.get("result", "")
-        return proc.stdout
-
-    except FileNotFoundError:
-        raise RuntimeError("Claude Code CLI not found")
-    except json.JSONDecodeError:
-        return proc.stdout
+    return output
 
 
-def _process_event(event: dict, thought_parts: list):
-    """处理单个事件"""
-    if not isinstance(event, dict):
-        return
-
-    if event.get("type") == "assistant":
-        # 提取思考内容
-        msg = event.get("message", {})
-        content = msg.get("content", [])
-        for c in content:
-            if isinstance(c, dict) and c.get("type") == "text":
-                thought_parts.append(c.get("text", ""))
-
-
-def _call_openai(model: str, prompt: str, on_step: callable) -> str:
+def _call_openai(model: str, prompt: str, on_step: callable, max_tokens: int = 4096) -> str:
     """调用 OpenAI API"""
     import requests
 
@@ -265,6 +247,7 @@ def _call_openai(model: str, prompt: str, on_step: callable) -> str:
     headers = {"Authorization": f"Bearer {api_key}"}
     payload = {
         "model": model,
+        "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": prompt}],
     }
 
@@ -281,7 +264,7 @@ def _call_openai(model: str, prompt: str, on_step: callable) -> str:
 
 
 def _call_ollama(model: str, prompt: str, on_step: callable) -> str:
-    """调用 Ollama"""
+    """调用 Ollama (本地模型)"""
     import requests
 
     url = _config["base_url"] or "http://localhost:11434/api/generate"
