@@ -56,6 +56,10 @@ from .tools_builtin import (
     file_append,
     file_update,
     shell_exec,
+    # Sandbox configuration
+    configure_sandbox,
+    get_sandbox_config,
+    SandboxConfig,
 )
 
 __all__ = [
@@ -81,4 +85,8 @@ __all__ = [
     "file_append",
     "file_edit",
     "shell_exec",
+    # Sandbox
+    "configure_sandbox",
+    "get_sandbox_config",
+    "SandboxConfig",
 ]

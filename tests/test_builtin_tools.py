@@ -5,6 +5,7 @@
 import pytest
 import tempfile
 import shutil
+import os
 from pathlib import Path
 
 from noesis.tools_builtin import (
@@ -15,6 +16,7 @@ from noesis.tools_builtin import (
     file_append,
     file_update,
     shell_exec,
+    configure_sandbox,
 )
 
 
@@ -22,12 +24,14 @@ class TestFileRead:
     """测试 file_read"""
 
     def setup_method(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.test_file = Path(self.temp_dir) / "test.txt"
+        # 使用 workspace 目录内的临时文件
+        self.workspace_dir = Path("./workspace/test_tmp")
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self.test_file = self.workspace_dir / "test.txt"
         self.test_file.write_text("line 1\nline 2\nline 3\nline 4\nline 5\n", encoding="utf-8")
 
     def teardown_method(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        shutil.rmtree(self.workspace_dir, ignore_errors=True)
 
     def test_read_full_file(self):
         result = file_read(str(self.test_file))
@@ -41,7 +45,7 @@ class TestFileRead:
         assert result["content"] == "line 2\nline 3\n"
 
     def test_read_nonexistent_file(self):
-        result = file_read("/nonexistent/file.txt")
+        result = file_read(str(self.workspace_dir / "nonexistent.txt"))
         assert result["success"] is False
         assert "不存在" in result["error"]
 
@@ -50,11 +54,13 @@ class TestFileWrite:
     """测试 file_write（覆盖模式）"""
 
     def setup_method(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.test_file = Path(self.temp_dir) / "test.txt"
+        # 使用 workspace 目录内的临时文件
+        self.workspace_dir = Path("./workspace/test_tmp")
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self.test_file = self.workspace_dir / "test.txt"
 
     def teardown_method(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        shutil.rmtree(self.workspace_dir, ignore_errors=True)
 
     def test_write_new_file(self):
         result = file_write(str(self.test_file), "hello\n")
@@ -68,7 +74,7 @@ class TestFileWrite:
         assert self.test_file.read_text(encoding="utf-8") == "new content\n"
 
     def test_write_creates_parent_dirs(self):
-        nested_file = Path(self.temp_dir) / "subdir" / "test.txt"
+        nested_file = self.workspace_dir / "subdir" / "test.txt"
         result = file_write(str(nested_file), "content\n")
         assert result["success"] is True
         assert nested_file.exists()
@@ -78,11 +84,13 @@ class TestFileAppend:
     """测试 file_append"""
 
     def setup_method(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.test_file = Path(self.temp_dir) / "test.txt"
+        # 使用 workspace 目录内的临时文件
+        self.workspace_dir = Path("./workspace/test_tmp")
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self.test_file = self.workspace_dir / "test.txt"
 
     def teardown_method(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        shutil.rmtree(self.workspace_dir, ignore_errors=True)
 
     def test_append_to_new_file(self):
         result = file_append(str(self.test_file), "hello\n")
@@ -100,11 +108,13 @@ class TestFileUpdate:
     """测试 file_update"""
 
     def setup_method(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.test_file = Path(self.temp_dir) / "test.txt"
+        # 使用 workspace 目录内的临时文件
+        self.workspace_dir = Path("./workspace/test_tmp")
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self.test_file = self.workspace_dir / "test.txt"
 
     def teardown_method(self):
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        shutil.rmtree(self.workspace_dir, ignore_errors=True)
 
     def test_update_single_line(self):
         self.test_file.write_text("DEBUG = True\nPORT = 8080\n", encoding="utf-8")
@@ -147,6 +157,15 @@ class TestFileUpdate:
 class TestShellExec:
     """测试 shell_exec"""
 
+    def setup_method(self):
+        # 配置沙盒允许测试命令
+        configure_sandbox(allowed_commands=[
+            "echo ",
+            "pwd",
+            "ls ",
+            "exit ",
+        ])
+
     def test_echo_command(self):
         result = shell_exec("echo 'hello world'")
         assert result["success"] is True
@@ -167,3 +186,43 @@ class TestShellExec:
         result = shell_exec("exit 1")
         assert result["success"] is True
         assert result["returncode"] == 1
+
+
+class TestSandboxRestrictions:
+    """测试沙盒限制"""
+
+    def test_file_read_outside_workspace(self):
+        """测试读取 workspace 外文件被拒绝"""
+        result = file_read("/etc/passwd")
+        assert result["success"] is False
+        assert "沙盒限制" in result["error"]
+
+    def test_file_write_outside_workspace(self):
+        """测试写入 workspace 外文件被拒绝"""
+        result = file_write("./test_outside.txt", "content")
+        assert result["success"] is False
+        assert "沙盒限制" in result["error"]
+
+    def test_shell_command_not_in_whitelist(self):
+        """测试执行不在白名单的命令被拒绝"""
+        # 恢复默认白名单
+        configure_sandbox(allowed_commands=["ls ", "pwd"])
+        result = shell_exec("whoami")
+        assert result["success"] is False
+        assert "沙盒限制" in result["error"]
+
+    def test_shell_command_in_whitelist(self):
+        """测试执行白名单内的命令成功"""
+        configure_sandbox(allowed_commands=["ls "])
+        result = shell_exec("ls workspace/")
+        assert result["success"] is True
+
+    def test_sandbox_disabled(self):
+        """测试禁用沙盒后可以访问任意路径"""
+        configure_sandbox(enabled=False)
+        result = file_write("./test_outside_sandbox.txt", "content")
+        assert result["success"] is True
+        # 清理
+        Path("./test_outside_sandbox.txt").unlink(missing_ok=True)
+        # 恢复沙盒
+        configure_sandbox(enabled=True)
