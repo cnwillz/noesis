@@ -238,6 +238,9 @@ _config = {
 
     # Profiles
     "profiles": _env_config["profiles"],
+
+    # 工具注册表
+    "tools": {},
 }
 
 
@@ -315,6 +318,7 @@ def call(
     system: Optional[str] = None,
     max_tokens: int = 4096,
     profile: Optional[str] = None,  # 使用预配置的 Profile
+    tools: Optional[list[str]] = None,  # 工具名称列表
 ) -> CallResult:
     """
     执行 LLM 调用（带完整思维链记录）
@@ -331,6 +335,7 @@ def call(
         system: System prompt
         max_tokens: 最大输出 token 数
         profile: Profile 名称（使用预配置）
+        tools: 工具名称列表（可选）
 
     Returns:
         CallResult: 调用结果
@@ -339,7 +344,11 @@ def call(
         # 方式 1: 使用 Profile（推荐）
         result = call("你好", profile="fast")
 
-        # 方式 2: 直接配置
+        # 方式 2: 带工具调用
+        register_tool("get_weather", get_weather_func)
+        result = call("北京天气？", profile="fast", tools=["get_weather"])
+
+        # 方式 3: 直接配置
         result = call(
             "你好",
             protocol="openai",
@@ -412,8 +421,8 @@ def call(
     # 记录 prompt
     _add_step("thought", prompt, {"role": "user"})
 
-    # 调用 LLM（传入配置对象）
-    output = _call_llm(call_config, prompt, _add_step)
+    # 调用 LLM（传入配置对象和工具）
+    output = _call_llm(call_config, prompt, _add_step, tools)
 
     # 记录结束
     duration_ms = int((time.time() - start_time) * 1000)
@@ -438,14 +447,15 @@ def _call_llm(
     config: LLMConfig,
     prompt: str,
     on_step: callable,
+    tools: Optional[list[str]] = None,
 ) -> str:
     """调用 LLM"""
     if config.protocol == "anthropic":
-        return _call_anthropic(config, prompt, on_step)
+        return _call_anthropic(config, prompt, on_step, tools)
     elif config.protocol == "openai":
-        return _call_openai(config, prompt, on_step)
+        return _call_openai(config, prompt, on_step, tools)
     elif config.protocol == "ollama":
-        return _call_ollama(config, prompt, on_step)
+        return _call_ollama(config, prompt, on_step, tools)
     else:
         raise ValueError(f"Unknown protocol: {config.protocol}")
 
@@ -454,9 +464,11 @@ def _call_anthropic(
     config: LLMConfig,
     prompt: str,
     on_step: callable,
+    tools: Optional[list[str]] = None,
 ) -> str:
     """调用 Anthropic API 格式"""
     import requests
+    from .tools import get_tool_definitions, execute_tool
 
     api_key = config.get_api_key()
     if not api_key:
@@ -480,6 +492,12 @@ def _call_anthropic(
     if config.system:
         payload["system"] = config.system
 
+    # 添加工具定义
+    if tools:
+        tool_defs = get_tool_definitions()
+        if tool_defs:
+            payload["tools"] = tool_defs
+
     response = requests.post(url, json=payload, headers=headers, timeout=300)
     response.raise_for_status()
     data = response.json()
@@ -487,6 +505,7 @@ def _call_anthropic(
     # 提取内容
     content = data.get("content", [])
     output = ""
+
     for c in content:
         c_type = c.get("type")
         # 记录思考过程（thinking 块）
@@ -494,6 +513,21 @@ def _call_anthropic(
             thinking = c.get("thinking", "")
             if thinking:
                 on_step("thought", thinking)
+        # 处理工具调用（tool_use 块）
+        elif c_type == "tool_use":
+            tool_name = c.get("name")
+            tool_input = c.get("input", {})
+            tool_id = c.get("id")
+
+            # 记录工具调用
+            on_step("tool_call", f"{tool_name}({tool_input})", {"tool_name": tool_name, "tool_input": tool_input, "tool_id": tool_id})
+
+            # 执行工具
+            tool_result = execute_tool(tool_name, tool_input)
+
+            # 记录工具结果
+            on_step("tool_result", str(tool_result), {"tool_name": tool_name, "tool_id": tool_id})
+
         # 提取最终输出（text 块）
         elif c_type == "text":
             text = c.get("text", "")
@@ -506,7 +540,7 @@ def _call_anthropic(
     return output
 
 
-def _call_openai(config: LLMConfig, prompt: str, on_step: callable) -> str:
+def _call_openai(config: LLMConfig, prompt: str, on_step: callable, tools: Optional[list[str]] = None) -> str:
     """调用 OpenAI API 格式"""
     import requests
 
@@ -522,6 +556,12 @@ def _call_openai(config: LLMConfig, prompt: str, on_step: callable) -> str:
         "messages": [{"role": "user", "content": prompt}],
     }
 
+    # OpenAI 工具支持（待实现）
+    # if tools:
+    #     tool_defs = get_tool_definitions()
+    #     if tool_defs:
+    #         payload["tools"] = tool_defs
+
     response = requests.post(url, json=payload, headers=headers, timeout=300)
     response.raise_for_status()
     data = response.json()
@@ -534,7 +574,7 @@ def _call_openai(config: LLMConfig, prompt: str, on_step: callable) -> str:
     return output
 
 
-def _call_ollama(config: LLMConfig, prompt: str, on_step: callable) -> str:
+def _call_ollama(config: LLMConfig, prompt: str, on_step: callable, tools: Optional[list[str]] = None) -> str:
     """调用 Ollama"""
     import requests
 

@@ -41,6 +41,7 @@ __author__ = "will"
 from .call import call, configure, LLMConfig, ModelProfile, register_profile, get_profile, list_profiles
 from .types import ThoughtStep, CallResult
 from .mcp import load_mcp
+from .tools import register_tool, get_tool, list_tools, execute_tool
 
 __all__ = [
     "call",
@@ -53,4 +54,9 @@ __all__ = [
     "list_profiles",
     "ThoughtStep",
     "CallResult",
+    # Tool calling
+    "register_tool",
+    "get_tool",
+    "list_tools",
+    "execute_tool",
 ]
