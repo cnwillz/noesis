@@ -463,6 +463,10 @@ def _call_anthropic(
         raise RuntimeError("API key not set")
 
     url = config.get_base_url()
+    # 如果 URL 没有 /v1/messages 后缀，自动添加
+    if not url.endswith("/v1/messages"):
+        url = url.rstrip("/") + "/v1/messages"
+
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
