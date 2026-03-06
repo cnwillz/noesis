@@ -28,6 +28,54 @@ for step in result.thought_chain:
     print(f"[{step.kind}] {step.content}")
 ```
 
+## 多 Provider 支持
+
+```python
+from noesis import call, LLMConfig
+
+# 方式 1: 直接在 call() 中指定不同 provider
+result_anthropic = call(
+    prompt="你好",
+    provider="anthropic",
+    model="claude-3-5-sonnet-20241022",
+    api_key="sk-ant-...",
+)
+
+result_openai = call(
+    prompt="Hello",
+    provider="openai",
+    model="gpt-4o",
+    api_key="sk-...",
+)
+
+# 方式 2: 使用 LLMConfig 对象
+anthropic_config = LLMConfig(
+    provider="anthropic",
+    model="claude-3-5-sonnet-20241022",
+    api_key="sk-ant-...",
+)
+
+openai_config = LLMConfig(
+    provider="openai",
+    model="gpt-4o",
+    api_key="sk-...",
+)
+
+result1 = call("你好", config=anthropic_config)
+result2 = call("Hello", config=openai_config)
+
+# 方式 3: 并发调用不同 provider
+import asyncio
+
+async def main():
+    tasks = [
+        call("你好", provider="anthropic", api_key="sk-ant-..."),
+        call("Hello", provider="openai", api_key="sk-..."),
+        call("こんにちは", provider="openai", base_url="https://custom-api.com"),
+    ]
+    results = await asyncio.gather(*tasks)
+```
+
 ## 输出示例
 
 ```
@@ -46,13 +94,37 @@ for step in result.thought_chain:
 ```python
 result = call(
     prompt: str,                    # Prompt 内容
+    config: LLMConfig = None,       # LLM 配置对象（可选）
     model: str = None,              # 模型名称
     provider: str = None,           # anthropic / openai / ollama
+    api_key: str = None,            # API Key
+    base_url: str = None,           # 自定义 API 端点
     log_to: str = None,             # 日志文件路径
     trace: bool = False,            # 是否启用追踪
     system: str = None,             # System prompt (仅 Anthropic)
     max_tokens: int = 4096,         # 最大输出 token 数
 ) -> CallResult
+```
+
+### `LLMConfig`
+
+```python
+from noesis import LLMConfig
+
+# 创建配置对象
+config = LLMConfig(
+    provider="anthropic",           # 提供商
+    model="claude-3-5-sonnet-20241022",  # 模型名称
+    api_key="sk-ant-...",           # API Key
+    base_url="https://...",         # 自定义端点（可选）
+    max_tokens=4096,                # 最大 token 数
+    system="你是一个助手",           # System prompt
+    anthropic_api_key="sk-ant-...", # 或 provider 专用 key
+    openai_api_key="sk-...",        # 或 provider 专用 key
+)
+
+# 使用配置
+result = call("你好", config=config)
 ```
 
 ### `configure()`
@@ -65,6 +137,8 @@ configure(
     base_url: str = None,           # 自定义 API 端点
     log_dir: str = None,            # 日志目录
     trace_enabled: bool = False,    # 是否启用追踪
+    anthropic_api_key: str = None,  # Anthropic 专用 Key
+    openai_api_key: str = None,     # OpenAI 专用 Key
 )
 ```
 
