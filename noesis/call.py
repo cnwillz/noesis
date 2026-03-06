@@ -466,7 +466,7 @@ def _call_anthropic(
     on_step: callable,
     tools: Optional[list[str]] = None,
 ) -> str:
-    """调用 Anthropic API 格式"""
+    """调用 Anthropic API 格式（支持多轮工具调用）"""
     import requests
     from .tools import get_tool_definitions, execute_tool
 
@@ -484,58 +484,104 @@ def _call_anthropic(
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
-    payload = {
-        "model": config.get_model(),
-        "max_tokens": config.max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if config.system:
-        payload["system"] = config.system
 
-    # 添加工具定义
+    # 构建工具定义
+    tool_defs = []
     if tools:
         tool_defs = get_tool_definitions()
+
+    # 消息历史（支持多轮对话）
+    messages = [{"role": "user", "content": prompt}]
+
+    # 多轮迭代处理工具调用
+    max_iterations = 5  # 防止无限循环
+    iteration = 0
+    output = ""
+
+    while iteration < max_iterations:
+        iteration += 1
+
+        # 构建请求
+        payload = {
+            "model": config.get_model(),
+            "max_tokens": config.max_tokens,
+            "messages": messages,
+        }
+        if config.system:
+            payload["system"] = config.system
         if tool_defs:
             payload["tools"] = tool_defs
 
-    response = requests.post(url, json=payload, headers=headers, timeout=300)
-    response.raise_for_status()
-    data = response.json()
+        # 发送请求
+        response = requests.post(url, json=payload, headers=headers, timeout=300)
+        response.raise_for_status()
+        data = response.json()
 
-    # 提取内容
-    content = data.get("content", [])
-    output = ""
+        # 提取内容
+        content = data.get("content", [])
+        output = ""
+        tool_uses = []
 
-    for c in content:
-        c_type = c.get("type")
-        # 记录思考过程（thinking 块）
-        if c_type == "thinking":
-            thinking = c.get("thinking", "")
-            if thinking:
-                on_step("thought", thinking)
-        # 处理工具调用（tool_use 块）
-        elif c_type == "tool_use":
-            tool_name = c.get("name")
-            tool_input = c.get("input", {})
-            tool_id = c.get("id")
+        for c in content:
+            c_type = c.get("type")
+            # 记录思考过程（thinking 块）
+            if c_type == "thinking":
+                thinking = c.get("thinking", "")
+                if thinking:
+                    on_step("thought", thinking)
+            # 处理工具调用（tool_use 块）
+            elif c_type == "tool_use":
+                tool_name = c.get("name")
+                tool_input = c.get("input", {})
+                tool_id = c.get("id")
 
-            # 记录工具调用
-            on_step("tool_call", f"{tool_name}({tool_input})", {"tool_name": tool_name, "tool_input": tool_input, "tool_id": tool_id})
+                # 记录工具调用
+                on_step("tool_call", f"{tool_name}({tool_input})", {"tool_name": tool_name, "tool_input": tool_input, "tool_id": tool_id})
 
-            # 执行工具
-            tool_result = execute_tool(tool_name, tool_input)
+                # 执行工具
+                tool_result = execute_tool(tool_name, tool_input)
 
-            # 记录工具结果
-            on_step("tool_result", str(tool_result), {"tool_name": tool_name, "tool_id": tool_id})
+                # 记录工具结果
+                on_step("tool_result", str(tool_result), {"tool_name": tool_name, "tool_id": tool_id})
 
-        # 提取最终输出（text 块）
-        elif c_type == "text":
-            text = c.get("text", "")
-            output += text
+                # 保存工具调用信息，用于下一轮对话
+                tool_uses.append({"id": tool_id, "name": tool_name, "input": tool_input, "result": tool_result})
 
-    # 记录最终输出
-    if output:
-        on_step("output", output)
+            # 提取最终输出（text 块）
+            elif c_type == "text":
+                text = c.get("text", "")
+                output += text
+
+        # 记录最终输出
+        if output:
+            on_step("output", output)
+
+        # 如果没有工具调用，返回文本结果
+        if not tool_uses:
+            break
+
+        # 有工具调用，将结果添加回消息历史，继续下一轮
+        # 添加助手响应（包含 tool_use）
+        assistant_content = []
+        tool_results_content = []
+        for c in content:
+            c_type = c.get("type")
+            if c_type == "text":
+                assistant_content.append(c)
+            elif c_type == "tool_use":
+                assistant_content.append(c)
+                # 使用之前执行的结果，避免重复执行
+                for tu in tool_uses:
+                    if tu["id"] == c.get("id"):
+                        tool_results_content.append({
+                            "type": "tool_result",
+                            "tool_use_id": c.get("id"),
+                            "content": tu["result"]
+                        })
+                        break
+
+        messages.append({"role": "assistant", "content": assistant_content})
+        messages.append({"role": "user", "content": tool_results_content})
 
     return output
 
