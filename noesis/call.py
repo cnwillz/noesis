@@ -5,6 +5,12 @@ LLM 调用 - 核心接口
 - Anthropic API (Claude)
 - OpenAI API
 - 兼容 OpenAI 格式的 API
+- Ollama (本地模型)
+
+配置优先级：
+1. 代码配置 configure()
+2. 环境变量 (NOESIS_*, ANTHROPIC_API_KEY, OPENAI_API_KEY 等)
+3. 默认值
 """
 
 import json
@@ -17,14 +23,38 @@ from typing import Any, Optional
 from .types import ThoughtStep, CallResult
 
 
-# 全局配置
+def _load_env_config() -> dict:
+    """从环境变量加载配置"""
+    return {
+        # Provider 配置
+        "provider": os.environ.get("NOESIS_PROVIDER"),
+        "model": os.environ.get("NOESIS_MODEL"),
+        "api_key": os.environ.get("NOESIS_API_KEY"),
+        "base_url": os.environ.get("NOESIS_BASE_URL"),
+
+        # 日志配置
+        "log_dir": os.environ.get("NOESIS_LOG_DIR"),
+        "trace_enabled": os.environ.get("NOESIS_TRACE_ENABLED", "false").lower() == "true",
+
+        # Provider 特定的 API Key
+        "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY"),
+        "openai_api_key": os.environ.get("OPENAI_API_KEY"),
+    }
+
+
+# 全局配置（环境变量 + 默认值）
+_env_config = _load_env_config()
 _config = {
-    "provider": "anthropic",
-    "model": None,  # 自动根据 provider 选择
-    "api_key": None,
-    "base_url": None,
-    "log_dir": None,
-    "trace_enabled": False,
+    "provider": _env_config["provider"] or "anthropic",
+    "model": _env_config["model"],  # 自动根据 provider 选择
+    "api_key": _env_config["api_key"],
+    "base_url": _env_config["base_url"],
+    "log_dir": _env_config["log_dir"],
+    "trace_enabled": _env_config["trace_enabled"],
+
+    # Provider 特定的 API Key
+    "anthropic_api_key": _env_config["anthropic_api_key"],
+    "openai_api_key": _env_config["openai_api_key"],
 }
 
 
@@ -35,9 +65,27 @@ def configure(
     base_url: Optional[str] = None,
     log_dir: Optional[str] = None,
     trace_enabled: Optional[bool] = None,
+    # Provider 特定的 API Key（可选，覆盖通用 api_key）
+    anthropic_api_key: Optional[str] = None,
+    openai_api_key: Optional[str] = None,
 ):
     """
     配置全局参数
+
+    配置优先级：
+    1. 本函数参数（最高优先级）
+    2. 环境变量
+    3. 默认值
+
+    环境变量列表:
+    - NOESIS_PROVIDER: 提供商 (anthropic / openai / ollama)
+    - NOESIS_MODEL: 模型名称
+    - NOESIS_API_KEY: 通用 API Key
+    - NOESIS_BASE_URL: 自定义 API 端点
+    - NOESIS_LOG_DIR: 日志目录
+    - NOESIS_TRACE_ENABLED: 是否启用追踪 (true/false)
+    - ANTHROPIC_API_KEY: Anthropic 专用 API Key
+    - OPENAI_API_KEY: OpenAI 专用 API Key
 
     Usage:
         configure(
@@ -60,6 +108,10 @@ def configure(
         _config["log_dir"] = log_dir
     if trace_enabled is not None:
         _config["trace_enabled"] = trace_enabled
+    if anthropic_api_key is not None:
+        _config["anthropic_api_key"] = anthropic_api_key
+    if openai_api_key is not None:
+        _config["openai_api_key"] = openai_api_key
 
 
 def _get_model() -> str:
@@ -189,6 +241,31 @@ def _call_llm(
         raise ValueError(f"Unknown provider: {provider}")
 
 
+def _get_api_key(provider: str) -> Optional[str]:
+    """获取 API Key（优先级：专用 > 通用 > 环境变量）"""
+    # 先检查 provider 专用的 API Key
+    if provider == "anthropic":
+        return _config["anthropic_api_key"] or _config["api_key"]
+    elif provider == "openai":
+        return _config["openai_api_key"] or _config["api_key"]
+    return _config["api_key"]
+
+
+def _get_base_url(provider: str) -> str:
+    """获取 API 端点 URL"""
+    # 如果配置了自定义 URL，优先使用
+    if _config["base_url"]:
+        return _config["base_url"]
+
+    # 返回默认 URL
+    defaults = {
+        "anthropic": "https://api.anthropic.com/v1/messages",
+        "openai": "https://api.openai.com/v1/chat/completions",
+        "ollama": "http://localhost:11434/api/generate",
+    }
+    return defaults.get(provider, "")
+
+
 def _call_anthropic(
     model: str,
     prompt: str,
@@ -199,11 +276,11 @@ def _call_anthropic(
     """调用 Anthropic API"""
     import requests
 
-    api_key = _config["api_key"] or os.environ.get("ANTHROPIC_API_KEY")
+    api_key = _get_api_key("anthropic")
     if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+        raise RuntimeError("ANTHROPIC_API_KEY not set (use configure() or set ANTHROPIC_API_KEY env var)")
 
-    url = _config["base_url"] or "https://api.anthropic.com/v1/messages"
+    url = _get_base_url("anthropic")
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
@@ -239,11 +316,11 @@ def _call_openai(model: str, prompt: str, on_step: callable, max_tokens: int = 4
     """调用 OpenAI API"""
     import requests
 
-    api_key = _config["api_key"] or os.environ.get("OPENAI_API_KEY")
+    api_key = _get_api_key("openai")
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set")
+        raise RuntimeError("OPENAI_API_KEY not set (use configure() or set OPENAI_API_KEY env var)")
 
-    url = _config["base_url"] or "https://api.openai.com/v1/chat/completions"
+    url = _get_base_url("openai")
     headers = {"Authorization": f"Bearer {api_key}"}
     payload = {
         "model": model,
@@ -267,7 +344,7 @@ def _call_ollama(model: str, prompt: str, on_step: callable) -> str:
     """调用 Ollama (本地模型)"""
     import requests
 
-    url = _config["base_url"] or "http://localhost:11434/api/generate"
+    url = _get_base_url("ollama")
     payload = {
         "model": model,
         "prompt": prompt,

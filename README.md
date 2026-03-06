@@ -13,14 +13,9 @@ pip install -e .
 ## 快速开始
 
 ```python
-from noesis import call, configure
+from noesis import call
 
-# 配置 API Key
-configure(
-    provider="anthropic",  # 或 openai
-    api_key="sk-...",      # 或使用环境变量 ANTHROPIC_API_KEY
-)
-
+# 先设置环境变量：export ANTHROPIC_API_KEY=sk-...
 result = call(
     prompt="分析这个任务并逐步思考",
     log_to="./session.jsonl",
@@ -81,27 +76,46 @@ load_mcp("./mcp.json")
 
 ## 配置
 
-### 方式 1: 代码配置
+### 方式 1: 环境变量（推荐）
+
+```bash
+# 必要配置
+export ANTHROPIC_API_KEY=sk-...        # Anthropic API Key
+# 或
+export OPENAI_API_KEY=sk-...            # OpenAI API Key
+
+# 可选配置
+export NOESIS_PROVIDER=anthropic        # 默认提供商 (anthropic / openai / ollama)
+export NOESIS_MODEL=claude-sonnet-4-5-20251001  # 默认模型
+export NOESIS_BASE_URL=https://...      # 自定义 API 端点
+export NOESIS_LOG_DIR=./logs            # 日志目录
+export NOESIS_TRACE_ENABLED=true        # 启用追踪
+```
+
+### 方式 2: 代码配置
 
 ```python
 from noesis import configure, call
 
+# 方式 A: 直接配置 API Key
+configure(
+    provider="anthropic",
+    model="claude-sonnet-4-5-20251001",
+    anthropic_api_key="sk-...",  # 不推荐：敏感信息
+    log_dir="./logs",
+    trace_enabled=True,
+)
+
+# 方式 B: 使用环境变量（推荐）
 configure(
     provider="anthropic",
     model="claude-sonnet-4-5-20251001",
     log_dir="./logs",
     trace_enabled=True,
 )
+# 然后在命令行设置：export ANTHROPIC_API_KEY=sk-...
 
 result = call(prompt="你好")
-```
-
-### 方式 2: 环境变量
-
-```bash
-export ANTHROPIC_API_KEY=sk-...
-export OPENAI_API_KEY=sk-...
-export NOESIS_LOG_DIR=./logs
 ```
 
 ### 方式 3: 配置文件
@@ -116,6 +130,21 @@ model = "claude-sonnet-4-5-20251001"
 [logging]
 log_dir = "./logs"
 trace_enabled = true
+```
+
+```python
+import tomli
+from noesis import configure
+
+with open(".noesis.toml", "rb") as f:
+    config = tomli.load(f)
+
+configure(
+    provider=config["llm"]["provider"],
+    model=config["llm"]["model"],
+    log_dir=config["logging"]["log_dir"],
+    trace_enabled=config["logging"]["trace_enabled"],
+)
 ```
 
 ## 日志格式 (JSONL)
