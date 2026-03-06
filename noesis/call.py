@@ -180,22 +180,77 @@ def _call_llm(
 
 def _call_claude(model: str, prompt: str, on_step: callable) -> str:
     """调用 Claude Code CLI"""
-    cmd = ["claude", "-p", prompt, "--output-format", "json", "--model", model]
+    import copy
+    import os
+
+    # 注意：不传 --model 参数，使用全局配置的模型
+    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+
+    # 清除 CLAUDECODE 环境变量，避免嵌套会话问题
+    env = copy.copy(os.environ)
+    env.pop("CLAUDECODE", None)
+    env.pop("CLAUDE_CODE_INNER_SESSION", None)
 
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
-        response = json.loads(proc.stdout)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            env=env,
+        )
 
-        # 提取思考过程
-        if "thought" in response:
-            on_step("thought", response["thought"])
+        # Claude Code 输出是 JSON Lines 格式，需要解析每一行
+        lines = proc.stdout.strip().split("\n")
+        result_line = None
+        thought_parts = []
 
-        return response.get("output_text", response.get("result", ""))
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+                if isinstance(event, list):
+                    # 有些事件是数组格式
+                    for item in event:
+                        _process_event(item, thought_parts)
+                        if isinstance(item, dict) and item.get("type") == "result":
+                            result_line = item
+                elif isinstance(event, dict):
+                    _process_event(event, thought_parts)
+                    if event.get("type") == "result":
+                        result_line = event
+            except json.JSONDecodeError:
+                continue
+
+        # 记录思考过程
+        if thought_parts:
+            on_step("thought", "\n".join(thought_parts))
+
+        # 提取结果
+        if result_line and isinstance(result_line, dict):
+            return result_line.get("result", "")
+        return proc.stdout
 
     except FileNotFoundError:
         raise RuntimeError("Claude Code CLI not found")
     except json.JSONDecodeError:
         return proc.stdout
+
+
+def _process_event(event: dict, thought_parts: list):
+    """处理单个事件"""
+    if not isinstance(event, dict):
+        return
+
+    if event.get("type") == "assistant":
+        # 提取思考内容
+        msg = event.get("message", {})
+        content = msg.get("content", [])
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "text":
+                thought_parts.append(c.get("text", ""))
 
 
 def _call_openai(model: str, prompt: str, on_step: callable) -> str:
