@@ -410,7 +410,7 @@ def call(
         })
 
     # 记录 prompt
-    _add_step("output", prompt, {"role": "prompt"})
+    _add_step("thought", prompt, {"role": "user"})
 
     # 调用 LLM（传入配置对象）
     output = _call_llm(call_config, prompt, _add_step)
@@ -488,12 +488,20 @@ def _call_anthropic(
     content = data.get("content", [])
     output = ""
     for c in content:
-        if c.get("type") == "text":
-            output += c.get("text", "")
+        c_type = c.get("type")
+        # 记录思考过程（thinking 块）
+        if c_type == "thinking":
+            thinking = c.get("thinking", "")
+            if thinking:
+                on_step("thought", thinking)
+        # 提取最终输出（text 块）
+        elif c_type == "text":
+            text = c.get("text", "")
+            output += text
 
-    # 记录思考过程
+    # 记录最终输出
     if output:
-        on_step("thought", output)
+        on_step("output", output)
 
     return output
 
