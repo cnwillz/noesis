@@ -36,36 +36,33 @@ class LLMConfig:
         # 方式 1: 直接在 call() 中传参数
         result = call(
             prompt="你好",
-            provider="anthropic",
+            protocol="anthropic",
             model="claude-3-5-sonnet-20241022",
             api_key="sk-...",
         )
 
         # 方式 2: 使用 LLMConfig 对象
         config = LLMConfig(
-            provider="openai",
+            protocol="openai",
             model="gpt-4o",
             api_key=os.environ["OPENAI_API_KEY"],
         )
         result = call("你好", config=config)
     """
-    provider: str = "anthropic"
+    # API 协议类型（决定请求格式）
+    protocol: str = "anthropic"  # anthropic / openai / ollama
+
+    # 模型标识（用户自定义名称，如 "qwen-max", "deepseek-v3"）
     model: Optional[str] = None
+
+    # API 配置
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     max_tokens: int = 4096
     system: Optional[str] = None
 
-    # Provider 特定的 API Key
-    anthropic_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
-
     def get_api_key(self) -> Optional[str]:
-        """获取 API Key（优先级：provider 专用 > 通用 > None）"""
-        if self.provider == "anthropic":
-            return self.anthropic_api_key or self.api_key
-        elif self.provider == "openai":
-            return self.openai_api_key or self.api_key
+        """获取 API Key"""
         return self.api_key
 
     def get_base_url(self) -> str:
@@ -78,19 +75,13 @@ class LLMConfig:
             "openai": "https://api.openai.com/v1/chat/completions",
             "ollama": "http://localhost:11434/api/generate",
         }
-        return defaults.get(self.provider, "")
+        return defaults.get(self.protocol, "")
 
     def get_model(self) -> str:
         """获取模型名称（带默认值）"""
         if self.model:
             return self.model
-
-        defaults = {
-            "anthropic": "claude-sonnet-4-5-20251001",
-            "openai": "gpt-4o",
-            "ollama": "llama3.1:8b",
-        }
-        return defaults.get(self.provider, "gpt-3.5-turbo")
+        return "default-model"
 
 
 # ============ Profiles 机制：预配置多个模型，代码中只使用名称 ============
@@ -100,64 +91,118 @@ class ModelProfile:
     """
     模型配置 Profile
 
-    用于预先在环境变量或配置文件中定义多个模型配置，
+    用于预先在 TOML 配置文件或环境变量中定义多个模型配置，
     代码中只使用配置名称，避免暴露敏感信息。
 
     用法:
-        # 环境变量定义 profiles
-        export NOESIS_PROFILES='{"fast":{"model":"claude-3-haiku"}, "smart":{"model":"claude-3-opus"}}'
+        # TOML 配置文件 .noesis.toml
+        # [profiles.fast]
+        # protocol = "anthropic"
+        # model = "qwen-max"
+        # base_url = "https://dashscope.aliyuncs.com/api/v1/chat/completions"
 
         # 代码中使用
         result = call("你好", profile="fast")
     """
     name: str
-    provider: Optional[str] = None
-    model: Optional[str] = None
+    protocol: str = "anthropic"  # API 协议类型：anthropic / openai / ollama
+    model: Optional[str] = None  # 模型名称（如 "qwen-max", "deepseek-v3"）
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     max_tokens: int = 4096
     system: Optional[str] = None
-    anthropic_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
 
     def to_config(self) -> LLMConfig:
         """转换为 LLMConfig"""
         return LLMConfig(
-            provider=self.provider,
+            protocol=self.protocol,
             model=self.model,
             api_key=self.api_key,
             base_url=self.base_url,
             max_tokens=self.max_tokens,
             system=self.system,
-            anthropic_api_key=self.anthropic_api_key,
-            openai_api_key=self.openai_api_key,
         )
 
 
 def _load_env_config() -> dict:
     """从环境变量加载配置"""
     return {
-        # Provider 配置
-        "provider": os.environ.get("NOESIS_PROVIDER"),
-        "model": os.environ.get("NOESIS_MODEL"),
-        "api_key": os.environ.get("NOESIS_API_KEY"),
-        "base_url": os.environ.get("NOESIS_BASE_URL"),
+        # 默认 Profile 名称
+        "default_profile": os.environ.get("NOESIS_DEFAULT_PROFILE"),
 
         # 日志配置
         "log_dir": os.environ.get("NOESIS_LOG_DIR"),
         "trace_enabled": os.environ.get("NOESIS_TRACE_ENABLED", "false").lower() == "true",
 
-        # Provider 特定的 API Key
-        "anthropic_api_key": os.environ.get("ANTHROPIC_API_KEY"),
-        "openai_api_key": os.environ.get("OPENAI_API_KEY"),
-
-        # Profiles 配置
-        "profiles": _parse_profiles_env(os.environ.get("NOESIS_PROFILES")),
+        # Profiles 配置（从 TOML 文件加载）
+        "profiles": _load_profiles_from_toml(),
     }
 
 
+def _load_profiles_from_toml() -> dict[str, ModelProfile]:
+    """从 TOML 配置文件加载 profiles"""
+    import os
+
+    # 查找配置文件：当前目录或用户主目录
+    config_paths = [
+        Path(".noesis.toml"),
+        Path.home() / ".noesis.toml",
+    ]
+
+    for config_path in config_paths:
+        if config_path.exists():
+            return _parse_toml_config(config_path)
+
+    return {}
+
+
+def _parse_toml_config(path: Path) -> dict[str, ModelProfile]:
+    """解析 TOML 配置文件"""
+    try:
+        import tomllib
+    except ImportError:
+        # Python < 3.11
+        try:
+            import tomli as tomllib
+        except ImportError:
+            return {}
+
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        return {}
+
+    profiles = {}
+    profiles_data = data.get("profiles", {})
+
+    for name, config in profiles_data.items():
+        # 替换环境变量 ${VAR_NAME}
+        api_key = config.get("api_key")
+        if api_key and isinstance(api_key, str) and api_key.startswith("${") and api_key.endswith("}"):
+            env_var = api_key[2:-1]
+            api_key = os.environ.get(env_var, "")
+
+        base_url = config.get("base_url")
+        if base_url and isinstance(base_url, str) and base_url.startswith("${") and base_url.endswith("}"):
+            env_var = base_url[2:-1]
+            base_url = os.environ.get(env_var, "")
+
+        profiles[name] = ModelProfile(
+            name=name,
+            protocol=config.get("protocol", "anthropic"),
+            model=config.get("model"),
+            api_key=api_key,
+            base_url=base_url or config.get("base_url"),
+            max_tokens=config.get("max_tokens", 4096),
+            system=config.get("system"),
+        )
+
+    return profiles
+
+
 def _parse_profiles_env(profiles_str: Optional[str]) -> dict[str, ModelProfile]:
-    """解析环境变量中的 profiles 配置"""
+    """解析环境变量中的 profiles 配置（已废弃，保留用于兼容）"""
     if not profiles_str:
         return {}
 
@@ -171,14 +216,12 @@ def _parse_profiles_env(profiles_str: Optional[str]) -> dict[str, ModelProfile]:
     for name, config in profiles_data.items():
         profiles[name] = ModelProfile(
             name=name,
-            provider=config.get("provider"),
+            protocol=config.get("protocol", "anthropic"),
             model=config.get("model"),
             api_key=config.get("api_key"),
             base_url=config.get("base_url"),
             max_tokens=config.get("max_tokens", 4096),
             system=config.get("system"),
-            anthropic_api_key=config.get("anthropic_api_key"),
-            openai_api_key=config.get("openai_api_key"),
         )
     return profiles
 
@@ -186,16 +229,12 @@ def _parse_profiles_env(profiles_str: Optional[str]) -> dict[str, ModelProfile]:
 # 全局配置（环境变量 + 默认值）
 _env_config = _load_env_config()
 _config = {
-    "provider": _env_config["provider"] or "anthropic",
-    "model": _env_config["model"],
-    "api_key": _env_config["api_key"],
-    "base_url": _env_config["base_url"],
+    # 默认 Profile 名称
+    "default_profile": _env_config["default_profile"],
+
+    # 日志配置
     "log_dir": _env_config["log_dir"],
     "trace_enabled": _env_config["trace_enabled"],
-
-    # Provider 特定的 API Key
-    "anthropic_api_key": _env_config["anthropic_api_key"],
-    "openai_api_key": _env_config["openai_api_key"],
 
     # Profiles
     "profiles": _env_config["profiles"],
@@ -203,36 +242,21 @@ _config = {
 
 
 def configure(
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
+    default_profile: Optional[str] = None,
     log_dir: Optional[str] = None,
     trace_enabled: Optional[bool] = None,
-    anthropic_api_key: Optional[str] = None,
-    openai_api_key: Optional[str] = None,
     # Profile 注册
     profile: Optional[str] = None,
     profile_config: Optional[ModelProfile] = None,
 ):
     """配置全局参数"""
     global _config
-    if provider is not None:
-        _config["provider"] = provider
-    if model is not None:
-        _config["model"] = model
-    if api_key is not None:
-        _config["api_key"] = api_key
-    if base_url is not None:
-        _config["base_url"] = base_url
+    if default_profile is not None:
+        _config["default_profile"] = default_profile
     if log_dir is not None:
         _config["log_dir"] = log_dir
     if trace_enabled is not None:
         _config["trace_enabled"] = trace_enabled
-    if anthropic_api_key is not None:
-        _config["anthropic_api_key"] = anthropic_api_key
-    if openai_api_key is not None:
-        _config["openai_api_key"] = openai_api_key
 
     # 注册 Profile
     if profile and profile_config:
@@ -282,58 +306,46 @@ def list_profiles() -> list[str]:
 def call(
     prompt: str,
     config: Optional[LLMConfig] = None,
+    protocol: Optional[str] = None,
     model: Optional[str] = None,
-    provider: Optional[str] = None,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     log_to: Optional[str] = None,
     trace: bool = False,
     system: Optional[str] = None,
     max_tokens: int = 4096,
-    profile: Optional[str] = None,  # 新增：使用预配置的 Profile
+    profile: Optional[str] = None,  # 使用预配置的 Profile
 ) -> CallResult:
     """
     执行 LLM 调用（带完整思维链记录）
 
     Args:
         prompt: Prompt 内容
-        config: LLM 配置对象（可选，使用 LLMConfig 可完整配置）
-        model: 模型名称（可选，覆盖 config）
-        provider: LLM 提供商（可选，覆盖 config）
-        api_key: API Key（可选，覆盖 config）
-        base_url: 自定义 API 端点（可选，覆盖 config）
-        log_to: 日志文件路径（JSONL 格式）
+        config: LLM 配置对象（可选）
+        protocol: API 协议类型（anthropic / openai / ollama）
+        model: 模型名称
+        api_key: API Key
+        base_url: 自定义 API 端点
+        log_to: 日志文件路径
         trace: 是否启用思维链追踪
-        system: System prompt（仅 Anthropic）
+        system: System prompt
         max_tokens: 最大输出 token 数
-        profile: Profile 名称（可选，使用预配置的配置）
+        profile: Profile 名称（使用预配置）
 
     Returns:
-        CallResult: 调用结果，包含输出和思维链
+        CallResult: 调用结果
 
     Example:
-        # 方式 1: 使用全局配置（环境变量或 configure()）
-        result = call("你好")
+        # 方式 1: 使用 Profile（推荐）
+        result = call("你好", profile="fast")
 
-        # 方式 2: 使用 Profile（推荐，不暴露敏感信息）
-        result = call("你好", profile="fast")  # 快速响应
-        result = call("复杂任务", profile="smart")  # 高智能
-
-        # 方式 3: 单次调用配置不同的 provider
+        # 方式 2: 直接配置
         result = call(
             "你好",
-            provider="openai",
+            protocol="openai",
             model="gpt-4o",
-            api_key=os.environ["OPENAI_API_KEY"],
+            base_url="https://api.openai.com/v1/chat/completions",
         )
-
-        # 方式 4: 使用 LLMConfig 对象
-        config = LLMConfig(
-            provider="anthropic",
-            model="claude-3-5-sonnet-20241022",
-            api_key="sk-ant-...",
-        )
-        result = call("你好", config=config)
     """
     # 如果使用 Profile，转换为 LLMConfig
     if profile:
@@ -341,20 +353,18 @@ def call(
         if profile_config:
             config = profile_config.to_config()
 
-    # 构建调用配置（优先级：函数参数 > config 参数 > 全局配置）
+    # 构建调用配置（优先级：函数参数 > config > profile）
     call_config = LLMConfig(
-        provider=provider or (config.provider if config else None) or _config["provider"],
-        model=model or (config.model if config else None) or _config["model"],
-        api_key=api_key or (config.api_key if config else None) or _config["api_key"],
-        base_url=base_url or (config.base_url if config else None) or _config["base_url"],
+        protocol=protocol or (config.protocol if config else None) or "anthropic",
+        model=model or (config.model if config else None),
+        api_key=api_key or (config.api_key if config else None),
+        base_url=base_url or (config.base_url if config else None),
         max_tokens=max_tokens,
         system=system or (config.system if config else None),
-        anthropic_api_key=anthropic_api_key or (config.anthropic_api_key if config else None) or _config["anthropic_api_key"],
-        openai_api_key=openai_api_key or (config.openai_api_key if config else None) or _config["openai_api_key"],
     )
 
     start_time = time.time()
-    provider = call_config.provider
+    protocol = call_config.protocol
     model = call_config.get_model()
 
     # 确定日志输出位置（使用全局配置）
@@ -380,7 +390,7 @@ def call(
         "seq": 0,
         "type": "start",
         "timestamp": datetime.now().isoformat(),
-        "provider": provider,
+        "protocol": protocol,
         "model": model,
     })
 
@@ -430,14 +440,14 @@ def _call_llm(
     on_step: callable,
 ) -> str:
     """调用 LLM"""
-    if config.provider == "anthropic":
+    if config.protocol == "anthropic":
         return _call_anthropic(config, prompt, on_step)
-    elif config.provider == "openai":
+    elif config.protocol == "openai":
         return _call_openai(config, prompt, on_step)
-    elif config.provider == "ollama":
+    elif config.protocol == "ollama":
         return _call_ollama(config, prompt, on_step)
     else:
-        raise ValueError(f"Unknown provider: {config.provider}")
+        raise ValueError(f"Unknown protocol: {config.protocol}")
 
 
 def _call_anthropic(
@@ -445,12 +455,12 @@ def _call_anthropic(
     prompt: str,
     on_step: callable,
 ) -> str:
-    """调用 Anthropic API"""
+    """调用 Anthropic API 格式"""
     import requests
 
     api_key = config.get_api_key()
     if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set (use configure(), LLMConfig, or set ANTHROPIC_API_KEY env var)")
+        raise RuntimeError("API key not set")
 
     url = config.get_base_url()
     headers = {
@@ -477,7 +487,7 @@ def _call_anthropic(
         if c.get("type") == "text":
             output += c.get("text", "")
 
-    # 记录思考过程（如果有）
+    # 记录思考过程
     if output:
         on_step("thought", output)
 
@@ -485,12 +495,12 @@ def _call_anthropic(
 
 
 def _call_openai(config: LLMConfig, prompt: str, on_step: callable) -> str:
-    """调用 OpenAI API"""
+    """调用 OpenAI API 格式"""
     import requests
 
     api_key = config.get_api_key()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set (use configure(), LLMConfig, or set OPENAI_API_KEY env var)")
+        raise RuntimeError("API key not set")
 
     url = config.get_base_url()
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -506,14 +516,14 @@ def _call_openai(config: LLMConfig, prompt: str, on_step: callable) -> str:
 
     output = data["choices"][0]["message"]["content"]
 
-    # OpenAI 不直接暴露思考过程，记录为 output
+    # 记录输出
     on_step("output", output)
 
     return output
 
 
 def _call_ollama(config: LLMConfig, prompt: str, on_step: callable) -> str:
-    """调用 Ollama (本地模型)"""
+    """调用 Ollama"""
     import requests
 
     url = config.get_base_url()

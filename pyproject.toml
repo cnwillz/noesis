@@ -18,6 +18,9 @@ dev = [
     "black>=23.0",
     "ruff>=0.1.0",
 ]
+toml = [
+    "tomli>=2.0.0; python_version<'3.11'",
+]
 
 [build-system]
 requires = ["hatchling"]

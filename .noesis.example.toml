@@ -1,0 +1,84 @@
+# noesis 配置文件示例
+# 复制此文件为 .noesis.toml 并填入你的配置
+# 注意：.noesis.toml 已加入 .gitignore，不要提交到 Git！
+
+# =============================================================================
+# 快速开始
+# =============================================================================
+# 1. 复制此文件：cp .noesis.example.toml .noesis.toml
+# 2. 填入你的 API Key 和模型配置
+# 3. 代码中使用：call("你好", profile="fast")
+
+# =============================================================================
+# Profile 配置说明
+# =============================================================================
+# 每个 profile 包含以下字段：
+# - protocol: API 协议类型 (必填)
+#   - "anthropic": Anthropic 格式 (Claude, DeepSeek, Moonshot 等)
+#   - "openai": OpenAI 格式 (GPT, Qwen, Yi 等)
+#   - "ollama": 本地 Ollama
+# - model: 模型名称 (必填，如 "qwen-max", "deepseek-v3")
+# - base_url: API 端点 (可选，默认根据 protocol 选择)
+# - api_key: API Key (可选，建议通过环境变量管理)
+# - max_tokens: 最大输出 token 数 (可选，默认 4096)
+# - system: System prompt (可选)
+
+# =============================================================================
+# 示例配置
+# =============================================================================
+
+[profiles.fast]
+# 快速响应模型 - 用于简单任务
+protocol = "anthropic"
+model = "qwen-max"
+base_url = "https://dashscope.aliyuncs.com/api/v1/chat/completions"
+api_key = "${QWEN_API_KEY}"  # 支持 ${ENV_VAR} 格式
+max_tokens = 2048
+
+[profiles.smart]
+# 高智能模型 - 用于复杂任务
+protocol = "anthropic"
+model = "deepseek-v3"
+base_url = "https://api.deepseek.com/v1/chat/completions"
+api_key = "${DEEPSEEK_API_KEY}"
+max_tokens = 4096
+
+[profiles.cheap]
+# 经济型模型 - 用于批量任务
+protocol = "openai"
+model = "gpt-3.5-turbo"
+api_key = "${OPENAI_API_KEY}"
+max_tokens = 1024
+
+[profiles.local]
+# 本地模型 - 用于测试
+protocol = "ollama"
+model = "llama3.1:8b"
+base_url = "http://localhost:11434/api/generate"
+max_tokens = 2048
+
+# =============================================================================
+# 更多示例（根据需要取消注释）
+# =============================================================================
+
+# [profiles.claude]
+# protocol = "anthropic"
+# model = "claude-3-5-sonnet-20241022"
+# api_key = "${ANTHROPIC_API_KEY}"
+
+# [profiles.gpt4]
+# protocol = "openai"
+# model = "gpt-4o"
+# api_key = "${OPENAI_API_KEY}"
+
+# [profiles.moonshot]
+# protocol = "anthropic"
+# model = "moonshot-v1-8k"
+# base_url = "https://api.moonshot.cn/v1/chat/completions"
+# api_key = "${MOONSHOT_API_KEY}"
+
+# [profiles.yi]
+# protocol = "openai"
+# model = "yi-lightning"
+# base_url = "https://api.lingyiwanwu.com/v1/chat/completions"
+# api_key = "${YI_API_KEY}"

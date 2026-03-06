@@ -15,9 +15,11 @@ pip install -e .
 ```python
 from noesis import call
 
-# 先设置环境变量：export ANTHROPIC_API_KEY=sk-...
+# 先配置：cp .noesis.example.toml .noesis.toml
+# 然后编辑 .noesis.toml 填入你的 API Key
 result = call(
     prompt="分析这个任务并逐步思考",
+    profile="fast",  # 使用预配置的 profile
     log_to="./session.jsonl",
 )
 
@@ -30,104 +32,68 @@ for step in result.thought_chain:
 
 ## Profiles 机制（推荐）
 
-**优势**：预先配置多个模型，代码中只使用名称，不暴露任何敏感信息。
+**优势**：
+- 配置文件保存在本地，不提交到 Git
+- 代码中只使用 profile 名称，不暴露任何敏感信息
+- 支持任意 API 协议（anthropic / openai / ollama）
+- 一份配置，多处复用
 
-### 方式 1: 环境变量配置 Profiles
+### 步骤 1: 创建配置文件
 
 ```bash
-# .env 文件或 shell 配置
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-...
+# 复制示例配置
+cp .noesis.example.toml .noesis.toml
 
-# 配置多个模型 profiles
-export NOESIS_PROFILES='
-{
-    "fast": {
-        "provider": "anthropic",
-        "model": "claude-3-haiku-20240307"
-    },
-    "smart": {
-        "provider": "anthropic",
-        "model": "claude-3-opus-20240229"
-    },
-    "cheap": {
-        "provider": "openai",
-        "model": "gpt-3.5-turbo"
-    }
-}'
+# 编辑配置，填入你的 API Key
+vim .noesis.toml
 ```
 
-```python
-from noesis import call
-
-# 代码中只使用名称，不接触任何敏感信息
-result_fast = call("你好", profile="fast")      # 快速响应
-result_smart = call("复杂问题", profile="smart")  # 高智能
-result_cheap = call("简单任务", profile="cheap")  # 便宜
-```
-
-### 方式 2: 代码中注册 Profiles
-
-```python
-from noesis import register_profile, ModelProfile, call
-
-# 注册模型配置（API Key 通过环境变量加载）
-register_profile(
-    "fast",
-    ModelProfile(
-        name="fast",
-        provider="anthropic",
-        model="claude-3-haiku-20240307",
-    ),
-)
-
-register_profile(
-    "smart",
-    ModelProfile(
-        name="smart",
-        provider="anthropic",
-        model="claude-3-opus-20240229",
-    ),
-)
-
-# 查看可用 profiles
-from noesis import list_profiles
-print(list_profiles())  # ["fast", "smart"]
-
-# 使用
-result = call("你好", profile="fast")
-```
-
-### 方式 3: 配置文件
+### 步骤 2: 配置模型
 
 ```toml
 # .noesis.toml
+
 [profiles.fast]
-provider = "anthropic"
-model = "claude-3-haiku-20240307"
+# 快速响应模型 - 用于简单任务
+protocol = "anthropic"  # API 协议类型
+model = "qwen-max"      # 模型名称
+base_url = "https://dashscope.aliyuncs.com/api/v1/chat/completions"
+api_key = "${QWEN_API_KEY}"  # 支持 ${ENV_VAR} 格式
+max_tokens = 2048
 
 [profiles.smart]
-provider = "anthropic"
-model = "claude-3-opus-20240229"
+# 高智能模型 - 用于复杂任务
+protocol = "anthropic"
+model = "deepseek-v3"
+base_url = "https://api.deepseek.com/v1/chat/completions"
+api_key = "${DEEPSEEK_API_KEY}"
+max_tokens = 4096
 
-[profiles.cheap]
-provider = "openai"
-model = "gpt-3.5-turbo"
+[profiles.claude]
+# Claude 模型
+protocol = "anthropic"
+model = "claude-3-5-sonnet-20241022"
+api_key = "${ANTHROPIC_API_KEY}"
+
+[profiles.gpt4]
+# GPT-4 模型
+protocol = "openai"
+model = "gpt-4o"
+api_key = "${OPENAI_API_KEY}"
 ```
 
+### 步骤 3: 代码中使用
+
 ```python
-import tomli
-from noesis import register_profile, ModelProfile
+from noesis import call, list_profiles
 
-with open(".noesis.toml", "rb") as f:
-    config = tomli.load(f)
+# 查看所有可用 profiles
+print(list_profiles())  # ["fast", "smart", "claude", "gpt4"]
 
-# 从配置注册 profiles
-for name, profile_config in config["profiles"].items():
-    register_profile(name, ModelProfile(name=name, **profile_config))
-
-# 使用
-result = call("你好", profile="fast")
+# 使用不同的模型
+result_fast = call("简单任务", profile="fast")
+result_smart = call("复杂问题", profile="smart")
+result_claude = call("创意写作", profile="claude")
 ```
 
 ## 输出示例
@@ -148,51 +114,62 @@ result = call("你好", profile="fast")
 ```python
 result = call(
     prompt: str,                    # Prompt 内容
-    config: LLMConfig = None,       # LLM 配置对象（可选）
+    profile: str = None,            # Profile 名称（推荐）
+    config: LLMConfig = None,       # LLM 配置对象
+    protocol: str = None,           # API 协议：anthropic / openai / ollama
     model: str = None,              # 模型名称
-    provider: str = None,           # anthropic / openai / ollama
     api_key: str = None,            # API Key
     base_url: str = None,           # 自定义 API 端点
     log_to: str = None,             # 日志文件路径
     trace: bool = False,            # 是否启用追踪
-    system: str = None,             # System prompt (仅 Anthropic)
+    system: str = None,             # System prompt
     max_tokens: int = 4096,         # 最大输出 token 数
 ) -> CallResult
 ```
 
-### `LLMConfig`
+### `ModelProfile`
 
 ```python
-from noesis import LLMConfig
+from noesis import ModelProfile, register_profile, call
 
-# 创建配置对象
-config = LLMConfig(
-    provider="anthropic",           # 提供商
-    model="claude-3-5-sonnet-20241022",  # 模型名称
-    api_key="sk-ant-...",           # API Key
-    base_url="https://...",         # 自定义端点（可选）
-    max_tokens=4096,                # 最大 token 数
-    system="你是一个助手",           # System prompt
-    anthropic_api_key="sk-ant-...", # 或 provider 专用 key
-    openai_api_key="sk-...",        # 或 provider 专用 key
+# 创建 Profile
+profile = ModelProfile(
+    name="qwen",
+    protocol="anthropic",           # API 协议类型
+    model="qwen-max",               # 模型名称
+    base_url="https://dashscope.aliyuncs.com/api/v1/chat/completions",
+    api_key="sk-...",               # 或使用 ${ENV_VAR}
+    max_tokens=2048,
 )
 
-# 使用配置
-result = call("你好", config=config)
+# 注册并使用
+register_profile("qwen", profile)
+result = call("你好", profile="qwen")
 ```
 
-### `configure()`
+### `list_profiles()`
 
 ```python
-configure(
-    provider: str = "anthropic",    # anthropic / openai / ollama
-    model: str = None,              # 模型名称
-    api_key: str = None,            # API Key
-    base_url: str = None,           # 自定义 API 端点
-    log_dir: str = None,            # 日志目录
-    trace_enabled: bool = False,    # 是否启用追踪
-    anthropic_api_key: str = None,  # Anthropic 专用 Key
-    openai_api_key: str = None,     # OpenAI 专用 Key
+from noesis import list_profiles
+
+# 查看所有可用的 Profile 名称
+print(list_profiles())  # ["fast", "smart", "claude"]
+```
+
+### `register_profile()`
+
+```python
+from noesis import register_profile, ModelProfile
+
+# 注册 Profile（动态添加）
+register_profile(
+    "custom",
+    ModelProfile(
+        name="custom",
+        protocol="openai",
+        model="gpt-4o",
+        api_key="sk-...",
+    ),
 )
 ```
 
@@ -202,62 +179,28 @@ configure(
 load_mcp("./mcp.json")
 ```
 
-## 配置
-
-### 方式 1: 环境变量（推荐）
+## 环境变量
 
 ```bash
-# 必要配置
-export ANTHROPIC_API_KEY=sk-...        # Anthropic API Key
-# 或
-export OPENAI_API_KEY=sk-...            # OpenAI API Key
+# 日志配置
+export NOESIS_LOG_DIR=./logs
+export NOESIS_TRACE_ENABLED=true
 
-# 可选配置
-export NOESIS_PROVIDER=anthropic        # 默认提供商 (anthropic / openai / ollama)
-export NOESIS_MODEL=claude-sonnet-4-5-20251001  # 默认模型
-export NOESIS_BASE_URL=https://...      # 自定义 API 端点
-export NOESIS_LOG_DIR=./logs            # 日志目录
-export NOESIS_TRACE_ENABLED=true        # 启用追踪
+# Profile 配置（可选，默认使用 .noesis.toml）
+export NOESIS_DEFAULT_PROFILE=fast
 ```
 
-### 方式 2: 代码配置
+## 配置文件
 
-```python
-from noesis import configure, call
+配置文件会自动从以下位置加载：
+1. `./.noesis.toml`（当前目录）
+2. `~/.noesis.toml`（用户主目录）
 
-# 方式 A: 直接配置 API Key
-configure(
-    provider="anthropic",
-    model="claude-sonnet-4-5-20251001",
-    anthropic_api_key="sk-...",  # 不推荐：敏感信息
-    log_dir="./logs",
-    trace_enabled=True,
-)
+**注意**: `.noesis.toml` 已加入 `.gitignore`，不要提交到 Git！
 
-# 方式 B: 使用环境变量（推荐）
-configure(
-    provider="anthropic",
-    model="claude-sonnet-4-5-20251001",
-    log_dir="./logs",
-    trace_enabled=True,
-)
-# 然后在命令行设置：export ANTHROPIC_API_KEY=sk-...
-
-result = call(prompt="你好")
-```
-
-### 方式 3: 配置文件
-
-`.noesis.toml`:
-
-```toml
-[llm]
-provider = "anthropic"
-model = "claude-sonnet-4-5-20251001"
-
-[logging]
-log_dir = "./logs"
-trace_enabled = true
+使用示例配置文件：
+```bash
+cp .noesis.example.toml .noesis.toml
 ```
 
 ```python
