@@ -33,6 +33,12 @@ Usage:
 
     # 查看所有可用 profiles
     print(list_profiles())  # ["fast", "smart"]
+
+    # 使用内置工具
+    from noesis import register_builtin_tools
+    register_builtin_tools()  # 注册 file_read, file_append, file_edit, shell_exec
+
+    result = call("读取 config.py 文件", tools=["file_read"])
 """
 
 __version__ = "0.1.0"
@@ -42,6 +48,14 @@ from .call import call, configure, LLMConfig, ModelProfile, register_profile, ge
 from .types import ThoughtStep, CallResult
 from .mcp import load_mcp
 from .tools import register_tool, get_tool, list_tools, execute_tool
+from .tools_builtin import (
+    register_builtin_tools,
+    TOOLS_BUILTIN,
+    file_read,
+    file_append,
+    file_edit,
+    shell_exec,
+)
 
 __all__ = [
     "call",
@@ -59,4 +73,11 @@ __all__ = [
     "get_tool",
     "list_tools",
     "execute_tool",
+    # Built-in tools
+    "register_builtin_tools",
+    "TOOLS_BUILTIN",
+    "file_read",
+    "file_append",
+    "file_edit",
+    "shell_exec",
 ]
